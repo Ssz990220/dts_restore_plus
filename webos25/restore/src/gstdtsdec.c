@@ -117,6 +117,7 @@
 #include <libavutil/mem.h>
 
 #include "gstdtsdec.h"
+#include "gstwebospcm.h"
 
 /* webOS: LG's audiosink accepts only integer PCM (no F32/F64). Every FFmpeg
  * output format is converted to float per DRC block, then to S32LE
@@ -137,7 +138,8 @@ enum
   PROP_DRC_BOOST,
   PROP_DRC_CUT,
   PROP_CENTER_BOOST_DB,
-  PROP_PASSTHROUGH
+  PROP_PASSTHROUGH,
+  PROP_PCM_MULTICHANNEL
 };
 
 /* webOS 25 patch: on-device config file (host-specific, so it deliberately
@@ -751,6 +753,14 @@ G_DEFINE_TYPE (GstDtsDec, gst_dtsdec, GST_TYPE_AUDIO_DECODER);
 GST_ELEMENT_REGISTER_DEFINE_CUSTOM (dtsdec, dtsdec_element_init);
 
 static void
+gst_dtsdec_finalize (GObject * object)
+{
+  GstDtsDec *dts = GST_DTSDEC (object);
+  dts_pcm_target_release (&dts->pcm_target);
+  G_OBJECT_CLASS (gst_dtsdec_parent_class)->finalize (object);
+}
+
+static void
 gst_dtsdec_class_init (GstDtsDecClass * klass)
 {
   GObjectClass *gobject_class;
@@ -763,6 +773,7 @@ gst_dtsdec_class_init (GstDtsDecClass * klass)
 
   gobject_class->set_property = gst_dtsdec_set_property;
   gobject_class->get_property = gst_dtsdec_get_property;
+  gobject_class->finalize = gst_dtsdec_finalize;
 
   gst_element_class_add_static_pad_template (gstelement_class, &sink_factory);
   gst_element_class_add_static_pad_template (gstelement_class, &src_factory);
@@ -885,6 +896,15 @@ gst_dtsdec_class_init (GstDtsDecClass * klass)
           "2 = always pass through", GST_DTSDEC_PASSTHROUGH_OFF,
           GST_DTSDEC_PASSTHROUGH_ALWAYS, GST_DTSDEC_PASSTHROUGH_AUTO,
           G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
+  /* Prototype only. Six-channel / 48 kHz PCM is the tested input geometry.
+   * This requests sink preservation, not a Dolby/MAT codec or HDMI format.
+   * Set before playback; normal installed behavior is unchanged by default. */
+  g_object_class_install_property (G_OBJECT_CLASS (klass), PROP_PCM_MULTICHANNEL,
+      g_param_spec_boolean ("pcm-multichannel", "Experimental PCM 5.1 routing",
+          "For decoded 6-channel 48 kHz PCM, request LG audiosink pcm-multi-ch; "
+          "does not enable OTT/MAT or change eARC settings", FALSE,
+          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | GST_PARAM_MUTABLE_READY));
 }
 
 /* webOS 25 patch: clamp + cache the linear multiplier for a dB gain value.
@@ -958,6 +978,8 @@ gst_dtsdec_init (GstDtsDec * dtsdec)
 {
   DtsDrcConfig cfg;
 
+  dtsdec->pcm_multichannel = FALSE;
+  dtsdec->pcm_target = NULL;
   dtsdec->dynamic_range_compression = FALSE;
 
   /* webOS 25 patch: defaults for make-up gain, DRC and centre boost come from
@@ -1042,6 +1064,8 @@ gst_dtsdec_stop (GstAudioDecoder * dec)
   GstDtsDec *dts = GST_DTSDEC (dec);
 
   GST_DEBUG_OBJECT (dec, "stop");
+
+  dts_pcm_target_release (&dts->pcm_target);
 
   avcodec_free_context (&dts->avctx);
   av_frame_free (&dts->frame);
@@ -1283,6 +1307,22 @@ gst_dtsdec_renegotiate (GstDtsDec * dts)
   gst_audio_info_init (&info);
   gst_audio_info_set_format (&info,
       SAMPLE_TYPE, dts->sample_rate, channels, (channels > 1 ? to : NULL));
+
+  /* Set the flag before downstream sees its first PCM format event. Preserve
+   * existing sample values, channel positions, and the FFmpeg reorder map.
+   * Bitstream passthrough uses a separate format negotiation path below. */
+  dts_pcm_target_release (&dts->pcm_target);
+  if (dts->pcm_multichannel && !dts->pt_active &&
+      channels == 6 && dts->sample_rate == 48000) {
+    gboolean configured = dts_pcm_target_enable (GST_ELEMENT (dts),
+        &dts->pcm_target);
+    GST_INFO_OBJECT (dts, "experimental PCM 5.1 sink configured=%d", configured);
+    gst_element_post_message (GST_ELEMENT (dts),
+        gst_message_new_element (GST_OBJECT (dts),
+            gst_structure_new ("webos-dts-pcm-route", "channels", G_TYPE_INT,
+                channels, "rate", G_TYPE_INT, dts->sample_rate,
+                "sink-configured", G_TYPE_BOOLEAN, configured, NULL)));
+  }
 
   return gst_audio_decoder_set_output_format (GST_AUDIO_DECODER (dts), &info);
 }
@@ -1894,6 +1934,9 @@ gst_dtsdec_set_property (GObject * object, guint prop_id, const GValue * value,
     case PROP_PASSTHROUGH:
       dts->passthrough = g_value_get_int (value);
       break;
+    case PROP_PCM_MULTICHANNEL:
+      dts->pcm_multichannel = g_value_get_boolean (value);
+      break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
       break;
@@ -1928,6 +1971,9 @@ gst_dtsdec_get_property (GObject * object, guint prop_id, GValue * value,
       break;
     case PROP_PASSTHROUGH:
       g_value_set_int (value, dts->passthrough);
+      break;
+    case PROP_PCM_MULTICHANNEL:
+      g_value_set_boolean (value, dts->pcm_multichannel);
       break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);

@@ -117,6 +117,10 @@ struct _GstDtsDec {
   gboolean       pt_output_ok;	/* last sound-output check passed        */
   gint64         pt_checked;	/* monotonic time of that check, us      */
 
+  /* Experimental, next-stream opt-in. No global audio policy writes. */
+  gboolean       pcm_multichannel;
+  struct _DtsPcmTarget *pcm_target;
+
   struct AVCodecContext *avctx;
   struct AVFrame *frame;
   struct AVPacket *pkt;

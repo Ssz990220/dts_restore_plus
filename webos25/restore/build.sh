@@ -93,7 +93,7 @@ docker run --rm -i --platform linux/arm64 \
       || { echo "ERROR: FFmpeg configured without the dca decoder"; exit 1; }
 
     # Work on a writable copy (source mount is read-only).
-    cp /work/gstdtsdec.c /work/gstdtsdec.h /tmp/
+    cp /work/gstdtsdec.c /work/gstdtsdec.h /work/gstwebospcm.h /tmp/
     cd /tmp
 
     # Sanity: confirm the caps patch is already present in the vendored source.
