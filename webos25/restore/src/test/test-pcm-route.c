@@ -193,6 +193,47 @@ check_late_sink (guint mode)
   gst_object_unref (pipeline);
 }
 
+static void
+check_synchronized_streams (void)
+{
+  GstElement *pipeline = gst_pipeline_new (NULL);
+  GstElement *sync = gst_element_factory_make ("streamsynchronizer", NULL);
+  GstElement *decoder = gst_element_factory_make ("identity", NULL);
+  GstElement *tee = gst_element_factory_make ("tee", NULL);
+  GstElement *video = gst_element_factory_make ("identity", NULL);
+  GstElement *subtitle = gst_element_factory_make ("identity", NULL);
+  GstElement *sink = gst_element_factory_make ("audiosink", NULL);
+  GstElement *video_sink = gst_element_factory_make ("audiosink", NULL);
+  GstElement *subtitle_sink = gst_element_factory_make ("audiosink", NULL);
+  GstPad *pads[3];
+  DtsPcmTarget *target = NULL;
+  /* Use the real playback plugin's paired-pad implementation. Audio is
+   * deliberately not pair zero; both other streams must remain untouched. */
+  g_assert_nonnull (sync);
+  gst_bin_add_many (GST_BIN (pipeline), sync, decoder, tee, video, subtitle,
+      sink, video_sink, subtitle_sink, NULL);
+  for (guint i = 0; i < 3; i++)
+    pads[i] = gst_element_request_pad_simple (sync, "sink_%u");
+  g_assert_true (gst_element_link_pads (video, "src", sync, "sink_0"));
+  g_assert_true (gst_element_link_pads (sync, "src_0", video_sink, "sink"));
+  g_assert_true (gst_element_link (decoder, tee));
+  g_assert_true (gst_element_link_pads (tee, NULL, sync, "sink_1"));
+  g_assert_true (gst_element_link_pads (sync, "src_1", sink, "sink"));
+  g_assert_true (gst_element_link_pads (subtitle, "src", sync, "sink_2"));
+  g_assert_true (gst_element_link_pads (sync, "src_2", subtitle_sink, "sink"));
+  g_assert_true (dts_pcm_target_enable (decoder, &target));
+  g_assert_true (enabled (sink));
+  g_assert_false (enabled (video_sink));
+  g_assert_false (enabled (subtitle_sink));
+  dts_pcm_target_release (&target);
+  g_assert_false (enabled (sink));
+  for (guint i = 0; i < 3; i++) {
+    gst_element_release_request_pad (sync, pads[i]);
+    gst_object_unref (pads[i]);
+  }
+  gst_object_unref (pipeline);
+}
+
 int
 main (int argc, char **argv)
 {
@@ -209,6 +250,7 @@ main (int argc, char **argv)
   check_late_sink (0);
   check_late_sink (1);
   check_late_sink (2);
+  check_synchronized_streams ();
   decoder = gst_element_factory_make ("identity", NULL);
   g_assert_false (dts_pcm_target_enable (decoder, &target));
   gst_object_unref (decoder);

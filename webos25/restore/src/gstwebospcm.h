@@ -32,17 +32,16 @@ dts_pcm_target_release (DtsPcmTarget ** target)
   *target = NULL;
 }
 
-/* Return a reference to the sole linked source pad; fail on fan-out or a
- * graph changing during iteration rather than configuring multiple sinks. */
+/* Consume an iterator and return its sole linked pad. */
 static GstPad *
-dts_pcm_single_link (GstElement * element, GstPadDirection direction)
+dts_pcm_unique_link (GstIterator *iter)
 {
-  GstIterator *iter = direction == GST_PAD_SRC ?
-      gst_element_iterate_src_pads (element) : gst_element_iterate_sink_pads (element);
   GValue item = G_VALUE_INIT;
   GstPad *result = NULL;
   GstIteratorResult status;
 
+  if (iter == NULL)
+    return NULL;
   while ((status = gst_iterator_next (iter, &item)) == GST_ITERATOR_OK) {
     GstPad *pad = g_value_get_object (&item);
     if (gst_pad_is_linked (pad)) {
@@ -65,6 +64,34 @@ done:
     g_value_unset (&item);
   gst_iterator_free (iter);
   return result;
+}
+
+static GstPad *
+dts_pcm_single_link (GstElement * element, GstPadDirection direction)
+{
+  return dts_pcm_unique_link (direction == GST_PAD_SRC ?
+      gst_element_iterate_src_pads (element) : gst_element_iterate_sink_pads (element));
+}
+
+/* streamsynchronizer is a collection of independent sink/src pairs for
+ * audio, video and subtitles. It is not a mixer. Follow its documented
+ * internal-link iterator, requiring the reverse pairing as well. Do not
+ * extend this exception to selectors, mixers or fan-out elements. */
+static GstPad *
+dts_pcm_sync_output (GstPad * input)
+{
+  GstPad *output = dts_pcm_unique_link (gst_pad_iterate_internal_links (input));
+  GstPad *reverse;
+  if (output == NULL)
+    return NULL;
+  reverse = dts_pcm_unique_link (gst_pad_iterate_internal_links (output));
+  if (reverse != input || GST_PAD_DIRECTION (output) != GST_PAD_SRC) {
+    gst_object_unref (output);
+    output = NULL;
+  }
+  if (reverse != NULL)
+    gst_object_unref (reverse);
+  return output;
 }
 
 static gboolean
@@ -132,6 +159,17 @@ dts_pcm_target_enable_full (GstElement * decoder, DtsPcmTarget ** target,
       break;
     }
     if (trace) g_string_append_printf (trace, "/%s", G_OBJECT_TYPE_NAME (element));
+    if (g_str_equal (G_OBJECT_TYPE_NAME (element), "GstStreamSynchronizer")) {
+      GstElementFactory *factory = gst_element_get_factory (element);
+      if (factory != NULL && g_str_equal (gst_plugin_feature_get_name (
+              GST_PLUGIN_FEATURE (factory)), "streamsynchronizer"))
+        output = dts_pcm_sync_output (peer);
+      if (output == NULL && trace)
+        g_string_append (trace, "/no-paired-output");
+      gst_object_unref (peer);
+      gst_object_unref (element);
+      continue;
+    }
     /* Do not enter a mixer/selector shared by another decoder. */
     only_input = dts_pcm_single_link (element, GST_PAD_SINK);
     if (only_input != peer) {
