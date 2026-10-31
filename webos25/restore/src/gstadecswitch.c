@@ -196,6 +196,23 @@ gst_adecswitch_pcm_stop (GstAdecSwitch * self)
   g_mutex_unlock (&self->pcm_lock);
 }
 
+static void
+gst_adecswitch_pcm_prepare (GstAdecSwitch * self, const gchar *factory)
+{
+  /* The sink's ACCEPT_CAPS query may otherwise reject 8ch before the first
+   * raw CAPS event can reach our output probe. Only software decoders opt in;
+   * the raw-format probe below validates the final layout before rendering. */
+  if (!self->pcm_multichannel ||
+      !(g_str_equal (factory, "dtsdec") ||
+        g_str_equal (factory, "avdec_truehd") ||
+        g_str_equal (factory, "avdec_mlp")))
+    return;
+  g_mutex_lock (&self->pcm_lock);
+  if (self->pcm_watch == NULL)
+    self->pcm_watch = dts_pcm_watch_new (GST_ELEMENT (self));
+  g_mutex_unlock (&self->pcm_lock);
+}
+
 /* Own the output flag at the decoder-switching bin, so a DTS -> TrueHD
  * switch cannot leave ownership with an asynchronously removed decoder.
  * Only standard 48 kHz 5.1/7.1 PCM layouts from our software decoders qualify.
@@ -416,6 +433,7 @@ gst_adecswitch_sink_event_probe (GstPad * pad, GstPadProbeInfo * info,
   }
   if (self->decoder != NULL && !g_strcmp0 (self->decoder_factory,
           factory_name)) {
+    gst_adecswitch_pcm_prepare (self, factory_name);
     GST_DEBUG_OBJECT (self, "same family (%s), forwarding %" GST_PTR_FORMAT,
         factory_name, caps);
     return GST_PAD_PROBE_OK;
@@ -503,6 +521,7 @@ have_decoder:
 
   self->decoder = decoder;
   self->decoder_factory = factory_name;
+  gst_adecswitch_pcm_prepare (self, factory_name);
 
   if (!gst_element_sync_state_with_parent (decoder))
     GST_WARNING_OBJECT (self, "could not sync %s state with parent",

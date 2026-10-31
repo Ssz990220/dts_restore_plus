@@ -94,7 +94,9 @@ dts_pcm_watch_probe (GstPad * pad, GstPadProbeInfo * info, gpointer data)
 {
   (void) pad;
   dts_pcm_watch_try (data, (GST_PAD_PROBE_INFO_TYPE (info) &
-          GST_PAD_PROBE_TYPE_BUFFER) ? "sink-buffer" : "sink-event");
+          GST_PAD_PROBE_TYPE_BUFFER) ? "sink-buffer" :
+      (GST_PAD_PROBE_INFO_TYPE (info) & GST_PAD_PROBE_TYPE_QUERY_DOWNSTREAM) ?
+      "sink-query" : "sink-event");
   return GST_PAD_PROBE_OK;
 }
 
@@ -123,7 +125,8 @@ dts_pcm_watch_add_sink (DtsPcmWatch * watch, GstElement * element)
       DtsPcmProbe *entry = g_new0 (DtsPcmProbe, 1);
       g_weak_ref_init (&entry->pad, pad);
       entry->id = gst_pad_add_probe (pad, GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM |
-          GST_PAD_PROBE_TYPE_BUFFER, dts_pcm_watch_probe,
+          GST_PAD_PROBE_TYPE_BUFFER | GST_PAD_PROBE_TYPE_QUERY_DOWNSTREAM,
+          dts_pcm_watch_probe,
           dts_pcm_watch_ref (watch), dts_pcm_watch_unref);
       g_ptr_array_add (watch->probes, entry);
     }

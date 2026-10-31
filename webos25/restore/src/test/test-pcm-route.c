@@ -10,7 +10,7 @@
 #include "../gstadecswitch.c"
 #pragma GCC diagnostic pop
 
-typedef struct { GstElement parent; gboolean multi; gboolean event_multi; } MockAudioSink;
+typedef struct { GstElement parent; gboolean multi; gboolean event_multi; gboolean query_multi; } MockAudioSink;
 typedef struct { GstElementClass parent; } MockAudioSinkClass;
 G_DEFINE_TYPE (MockAudioSink, mock_audio_sink, GST_TYPE_ELEMENT)
 
@@ -21,6 +21,22 @@ mock_event (GstPad * pad, GstObject * parent, GstEvent * event)
   ((MockAudioSink *) parent)->event_multi = ((MockAudioSink *) parent)->multi;
   gst_event_unref (event);
   return TRUE;
+}
+
+static gboolean
+mock_query (GstPad * pad, GstObject * parent, GstQuery * query)
+{
+  if (GST_QUERY_TYPE (query) == GST_QUERY_ACCEPT_CAPS) {
+    GstCaps *caps;
+    gint channels = 0;
+    MockAudioSink *sink = (MockAudioSink *) parent;
+    gst_query_parse_accept_caps (query, &caps);
+    gst_structure_get_int (gst_caps_get_structure (caps, 0), "channels", &channels);
+    sink->query_multi = sink->multi;
+    gst_query_set_accept_caps_result (query, channels != 8 || sink->multi);
+    return TRUE;
+  }
+  return gst_pad_query_default (pad, parent, query);
 }
 
 static void
@@ -65,6 +81,7 @@ mock_audio_sink_init (MockAudioSink * sink)
       GST_ELEMENT_GET_CLASS (sink), "sink");
   GstPad *pad = gst_pad_new_from_template (templ, "sink");
   gst_pad_set_event_function (pad, mock_event);
+  gst_pad_set_query_function (pad, mock_query);
   gst_element_add_pad (GST_ELEMENT (sink), pad);
 }
 
@@ -287,7 +304,8 @@ check_switch_pcm_layouts (void)
     self->decoder_factory = cases[i].decoder;
     g_assert_true (gst_pad_push_event (output, gst_event_new_caps (caps)));
     g_assert_cmpint (enabled (sink), ==, cases[i].expected);
-    g_assert_cmpint (((MockAudioSink *) sink)->event_multi, ==, cases[i].expected);
+    if (cases[i].expected)
+      g_assert_true (((MockAudioSink *) sink)->event_multi);
     g_assert_false (enabled (other));
     gst_caps_unref (caps);
   }
@@ -306,6 +324,32 @@ check_switch_pcm_layouts (void)
   gst_pad_set_active (output, FALSE);
   gst_object_unref (input);
   gst_object_unref (output);
+  gst_object_unref (pipeline);
+}
+
+static void
+check_late_sink_query (void)
+{
+  GstElement *pipeline = gst_pipeline_new (NULL);
+  GstElement *bin = gst_element_factory_make ("adecswitch", NULL);
+  GstAdecSwitch *self = GST_ADECSWITCH (bin);
+  GstElement *sink;
+  GstCaps *caps = gst_caps_new_simple ("audio/x-raw", "channels", G_TYPE_INT,
+      8, "rate", G_TYPE_INT, 48000, "channel-mask", GST_TYPE_BITMASK,
+      (guint64) 0xc3f, NULL);
+  gst_bin_add (GST_BIN (pipeline), bin);
+  g_object_set (bin, "pcm-multichannel", TRUE, NULL);
+  gst_adecswitch_pcm_prepare (self, "avdec_truehd");
+  sink = gst_element_factory_make ("audiosink", NULL);
+  gst_bin_add (GST_BIN (pipeline), sink);
+  g_assert_true (gst_element_link (bin, sink));
+  g_assert_false (enabled (sink));
+  g_assert_true (gst_pad_peer_query_accept_caps (self->srcpad, caps));
+  g_assert_true (((MockAudioSink *) sink)->query_multi);
+  g_assert_true (enabled (sink));
+  gst_adecswitch_pcm_stop (self);
+  g_assert_false (enabled (sink));
+  gst_caps_unref (caps);
   gst_object_unref (pipeline);
 }
 
@@ -328,6 +372,7 @@ main (int argc, char **argv)
   check_late_sink (2);
   check_synchronized_streams ();
   check_switch_pcm_layouts ();
+  check_late_sink_query ();
   decoder = gst_element_factory_make ("identity", NULL);
   g_assert_false (dts_pcm_target_enable (decoder, &target));
   gst_object_unref (decoder);
