@@ -260,7 +260,8 @@ check_synchronized_streams (void)
 }
 
 static void
-check_switch_pcm_layouts (void)
+check_one_switch_pcm_layout (gint channels, gint rate, guint64 mask,
+    const gchar *factory, gboolean expected)
 {
   GstElement *pipeline = gst_pipeline_new (NULL);
   GstElement *bin = gst_element_factory_make ("adecswitch", NULL);
@@ -269,55 +270,36 @@ check_switch_pcm_layouts (void)
   GstElement *sink = gst_element_factory_make ("audiosink", NULL);
   GstElement *other = gst_element_factory_make ("audiosink", NULL);
   GstPad *output, *input;
-  struct {
-    gint channels, rate;
-    guint64 mask;
-    const gchar *decoder;
-    gboolean expected;
-  } cases[] = {
-    { 6, 48000, 0xc0f, "dtsdec", TRUE },
-    { 8, 48000, 0xc3f, "avdec_truehd", TRUE },
-    { 6, 48000, 0x3f, "avdec_mlp", TRUE },
-    { 8, 48000, 0xff, "dtsdec", FALSE },
-    { 8, 96000, 0xc3f, "avdec_truehd", FALSE },
-    { 2, 48000, 3, "dtsdec", FALSE },
-    { 8, 48000, 0xc3f, "avdec_flac", FALSE },
-    { 8, 48000, 0xc3f, "dtsdec", TRUE }
-  };
-
+  GstCaps *caps;
   gst_bin_add_many (GST_BIN (pipeline), bin, sink, other, NULL);
   gst_bin_add (GST_BIN (bin), inner);
   output = gst_element_get_static_pad (inner, "src");
   g_assert_true (gst_ghost_pad_set_target (GST_GHOST_PAD (self->srcpad), output));
   g_assert_true (gst_element_link (bin, sink));
   input = gst_element_get_static_pad (sink, "sink");
+  self->decoder_factory = factory;
   g_object_set (bin, "pcm-multichannel", TRUE, NULL);
+  gst_adecswitch_pcm_prepare (self, factory);
   gst_pad_set_active (output, TRUE);
   gst_pad_set_active (self->srcpad, TRUE);
   gst_pad_set_active (input, TRUE);
   g_assert_true (gst_pad_push_event (output, gst_event_new_stream_start ("pcm")));
-  for (guint i = 0; i < G_N_ELEMENTS (cases); i++) {
-    GstCaps *caps = gst_caps_new_simple ("audio/x-raw", "format", G_TYPE_STRING,
-        "S32LE", "layout", G_TYPE_STRING, "interleaved", "channels", G_TYPE_INT,
-        cases[i].channels, "rate", G_TYPE_INT, cases[i].rate,
-        "channel-mask", GST_TYPE_BITMASK, cases[i].mask, NULL);
-    self->decoder_factory = cases[i].decoder;
-    g_assert_true (gst_pad_push_event (output, gst_event_new_caps (caps)));
-    g_assert_cmpint (enabled (sink), ==, cases[i].expected);
-    if (cases[i].expected)
-      g_assert_true (((MockAudioSink *) sink)->event_multi);
-    g_assert_false (enabled (other));
-    gst_caps_unref (caps);
-  }
-  /* Disabled mode must release its own flag before the next format arrives. */
-  g_object_set (bin, "pcm-multichannel", FALSE, NULL);
-  {
-    GstCaps *caps = gst_caps_new_simple ("audio/x-raw", "channels", G_TYPE_INT,
-        8, "rate", G_TYPE_INT, 48000, "channel-mask", GST_TYPE_BITMASK,
-        (guint64) 0xc3f, NULL);
-    g_assert_true (gst_pad_push_event (output, gst_event_new_caps (caps)));
-    gst_caps_unref (caps);
-  }
+  caps = gst_caps_new_simple ("audio/x-raw", "format", G_TYPE_STRING,
+      "S32LE", "layout", G_TYPE_STRING, "interleaved", "channels", G_TYPE_INT,
+      channels, "rate", G_TYPE_INT, rate, "channel-mask", GST_TYPE_BITMASK,
+      mask, NULL);
+  g_assert_true (gst_pad_push_event (output, gst_event_new_caps (caps)));
+  g_assert_cmpint (enabled (sink), ==, expected);
+  if (expected)
+    g_assert_true (((MockAudioSink *) sink)->event_multi);
+  g_assert_false (enabled (other));
+  gst_caps_unref (caps);
+  /* A subsequent unsupported stereo format must release our flag. */
+  caps = gst_caps_new_simple ("audio/x-raw", "channels", G_TYPE_INT, 2,
+      "rate", G_TYPE_INT, 44100, "channel-mask", GST_TYPE_BITMASK,
+      (guint64) 3, NULL);
+  g_assert_true (gst_pad_push_event (output, gst_event_new_caps (caps)));
+  gst_caps_unref (caps);
   g_assert_false (enabled (sink));
   gst_pad_set_active (input, FALSE);
   gst_pad_set_active (self->srcpad, FALSE);
@@ -325,6 +307,19 @@ check_switch_pcm_layouts (void)
   gst_object_unref (input);
   gst_object_unref (output);
   gst_object_unref (pipeline);
+}
+
+static void
+check_switch_pcm_layouts (void)
+{
+  check_one_switch_pcm_layout (6, 48000, 0xc0f, "dtsdec", TRUE);
+  check_one_switch_pcm_layout (8, 48000, 0xc3f, "avdec_truehd", TRUE);
+  check_one_switch_pcm_layout (6, 48000, 0x3f, "avdec_mlp", TRUE);
+  check_one_switch_pcm_layout (8, 48000, 0xff, "dtsdec", FALSE);
+  check_one_switch_pcm_layout (8, 96000, 0xc3f, "avdec_truehd", FALSE);
+  check_one_switch_pcm_layout (2, 48000, 3, "dtsdec", FALSE);
+  check_one_switch_pcm_layout (8, 48000, 0xc3f, "avdec_flac", FALSE);
+  check_one_switch_pcm_layout (8, 48000, 0xc3f, "dtsdec", TRUE);
 }
 
 static void
