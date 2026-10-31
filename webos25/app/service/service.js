@@ -351,7 +351,7 @@ var W25_COMPAT_SH = [
   "#   27 shadows libgstmatroska.so too (optional demuxer, Dolby Vision profile 7):",
   "#      bound in APPLY 2c, unbound by w25_drop_binds, fingerprinted in stock.fp and",
   "#      drift-checked like the /etc keys, so an older stock.fp without it is not drift.",
-  "W25_GATE_VERSION=35",
+  "W25_GATE_VERSION=36",
   "FP=/var/lib/webosbrew/dts25/stock.fp",
   "# Where the installed copy of THIS script lives, and the boot hook that symlinks",
   "# to it. Named here, in the shared block, so the read-only probe can fingerprint",
@@ -1423,6 +1423,10 @@ var W25_INIT_MAIN = [
   "}",
   "w25_appdts_start",
   "w25_pt_start",
+  "# Optional PCM/MAT policy: idle until an eligible decoded-DTS stream is proven.",
+  "if [ -f /var/lib/webosbrew/dts25/pcm-multichannel ] && [ -f /var/lib/webosbrew/dts25/pcm-mat-watch.py ] && command -v python3 >/dev/null 2>&1; then",
+  "  python3 /var/lib/webosbrew/dts25/pcm-mat-watch.py </dev/null >/dev/null 2>&1 &",
+  "fi",
   "# --- APPLY 2c) container demuxers with DTS re-enabled (mp4/ts/m2ts DTS -> audio/x-dts).",
   "#         Patched isomp4/mpegtsdemux default dts_support=TRUE; patched matroska",
   "#         signals Dolby Vision profile 7. Bound BEFORE the regen below so the",
@@ -2631,6 +2635,7 @@ function w25Enable(force) {
     // 1. Stage the DTS payload. dtsdec links its decoder statically, so nothing
     //    goes into dts25/libs/; a libdca.so.0 an older build left there is inert
     //    and goes with the rest of dts25/ on Uninstall. Mirrors install.sh step 1.
+    'python3 "' + PAYLOAD_W25 + '/pcm-mat-watch.py" --check-idle || exit 1',
     'mkdir -p "' + W25_DEST + '" || { log "FATAL: cannot create ' + W25_DEST + '"; exit 0; }',
     // Claim ownership: the app is managing this install from now on. A leftover
     // .cli-install from an earlier SSH install would otherwise disable self-heal
@@ -2639,8 +2644,10 @@ function w25Enable(force) {
     // which is the exact hazard the self-heal exists for. install.sh writes the
     // marker back if the user returns to the CLI.
     'if [ -f "' + W25_CLI_MARKER + '" ]; then rm -f "' + W25_CLI_MARKER + '" && log "took ownership from a previous CLI install (removed ' + W25_CLI_MARKER + ')"; fi',
+    '[ ! -f "' + W25_DEST + '/pcm-mat-watch.py" ] || python3 "' + W25_DEST + '/pcm-mat-watch.py" --stop',
+    'if [ -f "' + PAYLOAD_W25 + '/pcm-mat-watch.py" ]; then cp -f "' + PAYLOAD_W25 + '/pcm-mat-watch.py" "' + W25_DEST + '/pcm-mat-watch.py"; fi',
     'if [ -f "' + PAYLOAD_W25 + '/libgstdtsdec.so" ]; then',
-    '  cp -f "' + PAYLOAD_W25 + '/libgstdtsdec.so" "' + W25_DEST + '/libgstdtsdec.so" && log "installed libgstdtsdec.so" || log "WARN: copy libgstdtsdec.so failed"',
+    '  cp -f "' + PAYLOAD_W25 + '/libgstdtsdec.so" "' + W25_DEST + '/libgstdtsdec.so.new" && mv -f "' + W25_DEST + '/libgstdtsdec.so.new" "' + W25_DEST + '/libgstdtsdec.so" && log "installed libgstdtsdec.so" || log "WARN: copy libgstdtsdec.so failed"',
     'else log "WARN: ' + PAYLOAD_W25 + '/libgstdtsdec.so not found (populate payload before packaging)"; fi',
     // 1b. Stage the adecswitch payload (track A: same-family stream-switch bin,
     //     compiled rank 320) -- CORE, like dtsdec/libav (init_dts25.sh
@@ -2773,6 +2780,8 @@ function w25DisableSteps() {
     'LOG=' + LOG,
     'W25_LOG=' + LOG,
     'log() { echo "[dts25-disable $(date \'+%Y-%m-%d %H:%M:%S\')] $*" >> "$LOG" 2>&1; }',
+    'rm -f "' + W25_DEST + '/pcm-multichannel"',
+    '[ ! -f "' + W25_DEST + '/pcm-mat-watch.py" ] || python3 "' + W25_DEST + '/pcm-mat-watch.py" --stop',
     'log "=== disable (webos25) start ==="'
   ].concat(W25_COMPAT_SH, [
     'if [ -L "' + W25_HOOK + '" ] || [ -e "' + W25_HOOK + '" ]; then rm -f "' + W25_HOOK + '" && log "removed boot hook"; else log "boot hook not present"; fi',
@@ -3538,6 +3547,8 @@ function w25StatusProbe() {
     // Only while the watcher is alive: dtsdec ignores the file otherwise too.
     'P=$(cat ' + W25_PT_RUN + '/watcher.pid 2>/dev/null); echo "PT_OUT=$([ -n "$P" ] && [ -d /proc/$P ] && cut -d" " -f2- ' + W25_PT_RUN + '/sound-output 2>/dev/null)"',
     // The boot hook's last apply outcome: "<epoch> <on|skipped|failed> <message>".
+    'echo "PCM_FLAG=$([ -f ' + W25_DEST + '/pcm-multichannel ] && echo 1 || echo 0)"',
+    'echo "PCM_PHASE=$(python3 -c \'import json; print(json.load(open("/run/dts25-pcm/status.json")).get("phase","unknown"))\' 2>/dev/null || echo stopped)"',
     'echo "APPDTS_LAST=$(head -n1 ' + W25_DEST + '/appdts.last 2>/dev/null)"',
     'echo "EDIDTYPE=$(grep -o \'"edidType"[[:space:]]*:[[:space:]]*"[^"]*"\' /var/preferences/configd_db.json 2>/dev/null | head -n1 | sed \'s/.*:[[:space:]]*"//; s/"$//\')"'
   ].join("\n");
@@ -3749,6 +3760,8 @@ service.register("status", function (message) {
         // on a real C5 (decode + autoplug), but that only transfers to a TV whose
         // stock plugin fingerprints match the verified-sets table. Saying "yes"
         // on a forced/unverified TV would contradict the verdict beside it.
+        base.pcmMultichannelRequested = kv.PCM_FLAG === "1";
+        base.pcmMultichannelPhase = kv.PCM_PHASE || "stopped";
         base.passthroughRequested = kv.PT_FLAG === "1";
         base.passthroughOutput = kv.PT_OUT || "";
         base.passthroughToReceiver = base.passthroughRequested && w25PtReceiver(kv.PT_OUT);
@@ -4006,6 +4019,10 @@ function w25PassthroughSteps(on) {
   lines.push(Buffer.from(w25InitScriptBody(), "utf8").toString("base64"));
   lines.push('B64EOF');
   lines.push('chmod 0755 "' + W25_INIT_SCRIPT + '"');
+  if (on) {
+    lines.push('rm -f "' + W25_DEST + '/pcm-multichannel"');
+    lines.push('[ ! -f "' + W25_DEST + '/pcm-mat-watch.py" ] || python3 "' + W25_DEST + '/pcm-mat-watch.py" --stop');
+  }
   if (on) {
     lines.push('mkdir -p "$(dirname "$FLAG")" 2>/dev/null');
     lines.push(': > "$FLAG"');
@@ -4486,3 +4503,6 @@ function parseKv(stdout) {
   });
   return kv;
 }
+
+require("./pcm-mode").register(service, {detect: detectProfile, exec: rootExec, profile: PROFILE_W25,
+  paths: {dest: W25_DEST, payload: PAYLOAD_W25, init: W25_INIT_SCRIPT, appbase: APPBASE_PRELUDE}});

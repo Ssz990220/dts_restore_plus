@@ -27,7 +27,7 @@ function loadService() {
     "libav: C2_EXPECTED_SETS[0].libav, iso: C2_EXPECTED_SETS[0].iso, mkv: C2_EXPECTED_SETS[0].mkv}};";
   var FakeService = function () { this.register = function () {}; };
   var context = {
-    require: function (name) { return name === "webos-service" ? FakeService : require(name); },
+    require: function (name) { return name === "webos-service" ? FakeService : require("node:module").createRequire(SERVICE)(name); },
     module: {exports: {}}, exports: {}, Buffer: Buffer, console: console,
     setTimeout: setTimeout, clearTimeout: clearTimeout
   };

@@ -1,0 +1,24 @@
+DTS Enabler PCM 5.1 — experimental LG C5 test build
+
+Fork: https://github.com/Ssz990220/dts_restore_plus
+Based on josippapez/dts_restore_plus; original credits and licenses are retained.
+
+This is a test release, not a claim that DTS-to-PCM 5.1 is fixed on the TV.
+It adds an opt-in decoded PCM 5.1 sink path and a separately guarded MAT policy.
+Only six-channel, 48 kHz DTS on the webOS 25 C5 path is targeted. No 7.1 validation.
+
+The application ID is the original DTS Enabler ID. Installing this package
+replaces that app, preserving its existing configuration; it does not create
+a second independently active DTS installation. The decoder payload must then
+be applied with Enable, with playback stopped. PCM test mode starts OFF unless
+you explicitly enabled it before. Restart the video after turning the mode on.
+
+Requires root, Homebrew Channel, an eARC/MAT receiver, eARC On and Digital Sound
+Out Auto. Enabling PCM mode turns DTS bitstream passthrough off. A receiver's
+5.1 badge alone is insufficient: check rear-left, rear-right and LFE tones.
+
+Rollback: turn PCM mode off, stop playback, install the original upstream
+2.7.46 app and press Enable to restore its payload. Keep the original IPK.
+Disable/Uninstall also stop this fork's PCM watcher before reverting overrides.
+
+No server credentials, tokens or stream URLs are included in the package.

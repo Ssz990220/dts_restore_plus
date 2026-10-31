@@ -31,6 +31,7 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 OUT="${OUT:-$HERE/out}"
+BUILD_PLATFORM="${BUILD_PLATFORM:-linux/arm64}"
 mkdir -p "$OUT"
 
 echo "=== dtsdec webOS25 cross-build ==="
@@ -39,11 +40,12 @@ echo "out: $OUT"
 
 # Run the whole build inside an arm64 Debian 12 container. We bind-mount the
 # vendored source read-only at /work and the output dir at /out.
-docker run --rm -i --platform linux/arm64 \
+docker run --rm -i --platform "$BUILD_PLATFORM" \
   -v "$HERE/src":/work:ro \
   -v "$OUT":/out \
   debian:12-slim /bin/bash -euo pipefail -s <<'CONTAINER_EOF'
     export DEBIAN_FRONTEND=noninteractive
+    echo "=== preparing native-host armel cross-toolchain ==="
 
     # Single suite for both architectures. bookworm-security carries an arm64
     # libpcre2-8-0 10.42-1+deb12u1 that armel never got, and Multi-Arch: same
@@ -79,7 +81,9 @@ docker run --rm -i --platform linux/arm64 \
 
     # Static FFmpeg with only the dca decoder. Same tag and the same no-asm
     # soft-float settings as build-truehd.sh's shared build.
-    git clone -q --depth 1 -b n4.4.4 https://git.ffmpeg.org/ffmpeg.git /tmp/ffmpeg
+    echo "=== fetching pinned FFmpeg n4.4.4 ==="
+    timeout 180 git clone -q --depth 1 -b n4.4.4 https://github.com/FFmpeg/FFmpeg.git /tmp/ffmpeg
+    echo "=== compiling static DCA decoder ==="
     ( cd /tmp/ffmpeg && ./configure --cross-prefix=arm-linux-gnueabi- \
         --enable-cross-compile --arch=arm --target-os=linux --prefix=/tmp/ffdca \
         --disable-everything --enable-decoder=dca \

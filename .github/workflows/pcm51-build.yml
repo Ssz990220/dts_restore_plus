@@ -23,12 +23,10 @@ jobs:
           sudo apt-get install -y -qq libgstreamer1.0-dev gstreamer1.0-tools ffmpeg
           sh webos25/restore/src/test/run-tests.sh
           sh webos25/restore/src/test/run-pcm-route-tests.sh
-      - uses: docker/setup-qemu-action@v3
-        with:
-          platforms: arm64
       - name: Build C5 ARM soft-float decoder from this source
         env:
           OUT: ${{ runner.temp }}/pcm51-decoder
+          BUILD_PLATFORM: linux/amd64
         run: bash webos25/restore/build.sh
       - name: Record source and binary identities
         env:

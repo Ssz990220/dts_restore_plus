@@ -1,0 +1,104 @@
+name: Package PCM 5.1 Homebrew test release
+
+on:
+  workflow_dispatch:
+    inputs:
+      decoder_run_id:
+        description: Successful PCM decoder build run in this fork
+        required: true
+      tag:
+        description: Fixed experimental release tag
+        required: true
+        default: pcm51-test-2.7.47
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  package:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      DECODER_RUN: ${{ inputs.decoder_run_id }}
+      RELEASE_TAG: ${{ inputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Verify decoder artifact and source identity
+        run: |
+          set -euo pipefail
+          [[ "$DECODER_RUN" =~ ^[0-9]+$ ]]
+          [[ "$RELEASE_TAG" =~ ^pcm51-test-[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          test "$(gh run view "$DECODER_RUN" --json conclusion --jq .conclusion)" = success
+          test "$(gh api "repos/$GH_REPO/actions/runs/$DECODER_RUN" --jq .path)" = .github/workflows/pcm51-build.yml
+          gh run download "$DECODER_RUN" -n pcm51-decoder-armel -D /tmp/decoder
+          SOURCE=$(cat /tmp/decoder/source-commit.txt)
+          test "$SOURCE" = "$(gh run view "$DECODER_RUN" --json headSha --jq .headSha)"
+          git diff --exit-code "$SOURCE" HEAD -- webos25/restore/src/gstdtsdec.c webos25/restore/src/gstdtsdec.h webos25/restore/src/gstwebospcm.h webos25/restore/build.sh
+          EXPECTED=$(awk '{print $1}' /tmp/decoder/SHA256SUMS)
+          test "$EXPECTED" = "$(sha256sum /tmp/decoder/libgstdtsdec.so | cut -d' ' -f1)"
+          cp /tmp/decoder/libgstdtsdec.so webos25/restore/out/libgstdtsdec.so
+      - name: Test app and policy packaging
+        run: |
+          node --check webos25/app/service/service.js
+          node --check webos25/app/service/pcm-mode.js
+          node --check webos25/app/js/app.js
+          node --test webos25/app/service/test/profile-compat.test.js
+          python3 webos25/restore/src/test/test-pcm-policy.py
+          sh webos25/restore/check-init-sync.sh
+          sh webos25/restore/check-manifest-floor.sh
+      - name: Populate the app payload
+        run: |
+          cp webos25/restore/out/libgstdtsdec.so webos25/app/payload/webos25/
+          cp webos25/restore/pcm-mat-watch.py webos25/app/payload/webos25/
+          cp webos25/restore/switch-out/libgstadecswitch.so webos25/app/payload/webos25/
+          cp -P webos25/restore/truehd-out/libgstlibav.so webos25/restore/truehd-out/libav*.so* webos25/restore/truehd-out/libsw*.so* webos25/app/payload/webos25-truehd/
+          cp webos25/restore/demux-out/libgst*.so webos25/app/payload/webos25-demux/
+          mkdir -p webos25/app/payload/c2-ts
+          cp gst/libgstlibav.so gst/libgstisomp4.so gst/libgstmatroska.so gst/libgstisomp4_1_8.so webos25/app/payload/cx/
+          cp webos25/restore/ts114-out/libgstmpegtsdemux.so webos25/app/payload/c2-ts/
+      - name: Package test IPK and manifest
+        run: |
+          npm install -g @webosose/ares-cli
+          mkdir -p webos25/app/dist
+          (cd webos25/app && ares-package . service -o dist)
+          python3 packaging/homebrew/pcm-manifest.py "$GH_REPO" "$RELEASE_TAG" /tmp/decoder/source-commit.txt
+      - name: Publish explicitly experimental release
+        run: |
+          gh release create "$RELEASE_TAG" --target "$GITHUB_SHA" --prerelease \
+            --title 'DTS Enabler PCM 5.1 — C5 test 2.7.47' \
+            --notes-file webos25/app/PCM-TEST-NOTICE.txt \
+            webos25/app/dist/*.ipk webos25/app/dist/*.manifest.json webos25/app/dist/build-provenance.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Generate fixed-release Homebrew repository
+        env:
+          CI: ''
+        run: |
+          git clone --depth 1 https://github.com/webosbrew/apps-repo /tmp/apps-repo
+          pip install -q -r /tmp/apps-repo/requirements.txt
+          mkdir -p /tmp/apps-repo/mypackages
+          python3 packaging/homebrew/pcm-registry.py "$GH_REPO" "$RELEASE_TAG" /tmp/apps-repo/mypackages
+          (cd /tmp/apps-repo && python3 -c "from pathlib import Path; from repogen import pkg_info, apidata; apidata.generate(pkg_info.list_packages(Path('mypackages')), Path('content/api'))")
+          mkdir -p /tmp/pages/api
+          cp -r /tmp/apps-repo/content/api/* /tmp/pages/api/
+          touch /tmp/pages/.nojekyll
+      - name: Publish fork repository index
+        run: |
+          cd /tmp/pages
+          git init -b gh-pages
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .
+          git commit -m "Publish experimental PCM test repository"
+          gh auth setup-git
+          git remote add origin "https://github.com/$GH_REPO.git"
+          git push --force origin gh-pages

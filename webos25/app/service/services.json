@@ -6,17 +6,54 @@
       "name": "io.github.josippapez.dtsenabler.service",
       "description": "Detect the LG TV generation and apply the correct DTS-restore mechanism. All privileged work is proxied through the Homebrew Channel exec service.",
       "commands": [
-        { "name": "detect",    "description": "Run the read-only detection probe; return the target profile + raw probes" },
-        { "name": "status",    "description": "Detect + report model/webOS/GStreamer and whether the matched patch is active" },
-        { "name": "enable",    "description": "Apply the DTS-restore mechanism matching the detected profile" },
-        { "name": "disable",   "description": "Remove the boot hook + best-effort unmount for the detected profile" },
-        { "name": "uninstall", "description": "Disable + remove all on-device state for the detected profile" },
-        { "name": "test",      "description": "Decode the bundled DTS samples supported by the detected profile through its owned media registry; report PASS/FAIL" },
-        { "name": "testfiles", "description": "Return on-device paths of the bundled DTS samples for in-app play-by-ear" },
-        { "name": "setMakeupGain", "description": "Write both gain.conf files: per-codec make-up gain, DRC preset and dialogue boost" },
-        { "name": "getMakeupGain", "description": "Read both gain.conf files back so the UI can show the saved settings" },
-        { "name": "abPreview",     "description": "Render the bundled DTS sample twice (DRC off vs the saved settings), measure both, and return playable paths" },
-        { "name": "abCleanup",     "description": "Delete the rendered A/B clips from the app directory" }
+        {
+          "name": "detect",
+          "description": "Run the read-only detection probe; return the target profile + raw probes"
+        },
+        {
+          "name": "status",
+          "description": "Detect + report model/webOS/GStreamer and whether the matched patch is active"
+        },
+        {
+          "name": "enable",
+          "description": "Apply the DTS-restore mechanism matching the detected profile"
+        },
+        {
+          "name": "disable",
+          "description": "Remove the boot hook + best-effort unmount for the detected profile"
+        },
+        {
+          "name": "uninstall",
+          "description": "Disable + remove all on-device state for the detected profile"
+        },
+        {
+          "name": "test",
+          "description": "Decode the bundled DTS samples supported by the detected profile through its owned media registry; report PASS/FAIL"
+        },
+        {
+          "name": "testfiles",
+          "description": "Return on-device paths of the bundled DTS samples for in-app play-by-ear"
+        },
+        {
+          "name": "setMakeupGain",
+          "description": "Write both gain.conf files: per-codec make-up gain, DRC preset and dialogue boost"
+        },
+        {
+          "name": "getMakeupGain",
+          "description": "Read both gain.conf files back so the UI can show the saved settings"
+        },
+        {
+          "name": "abPreview",
+          "description": "Render the bundled DTS sample twice (DRC off vs the saved settings), measure both, and return playable paths"
+        },
+        {
+          "name": "abCleanup",
+          "description": "Delete the rendered A/B clips from the app directory"
+        },
+        {
+          "name": "setPcmMultichannel",
+          "description": "Enable or stop the experimental C5 decoded PCM 5.1 route"
+        }
       ]
     }
   ]

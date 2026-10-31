@@ -267,6 +267,20 @@
         </dl>
       </section>
 
+      <section class="card" id="cardPcmMultichannel" hidden>
+        <h2>DTS to PCM 5.1 (C5 test)</h2>
+        <p class="muted">Decode DTS on the TV and request multichannel PCM over HDMI eARC.
+          Requires an eARC receiver with Dolby MAT support, eARC On, and Digital Sound Out Auto.
+          This test mode supports DTS 5.1 at 48 kHz. Restart the video after enabling it.</p>
+        <p class="muted note-warn">Experimental: confirm the rear speakers and low-frequency channel.
+          A 5.1 format badge alone does not confirm correct sound. Enabling this turns DTS passthrough off.</p>
+        <div class="row">
+          <button id="btnPcmOn" class="btn focusable" data-nav disabled>Turn on PCM 5.1 test</button>
+          <button id="btnPcmOff" class="btn focusable" data-nav disabled>Turn off</button>
+        </div>
+        <dl class="status"><dt>PCM mode</dt><dd id="sPcmMode">&mdash;</dd></dl>
+      </section>
+
       <section class="card" id="cardPassthrough" hidden>
         <h2>Send DTS to a receiver (experimental)</h2>
         <p class="muted">

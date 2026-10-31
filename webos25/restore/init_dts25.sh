@@ -97,7 +97,7 @@ EXPECT_GST=1.24
 #   27 shadows libgstmatroska.so too (optional demuxer, Dolby Vision profile 7):
 #      bound in APPLY 2c, unbound by w25_drop_binds, fingerprinted in stock.fp and
 #      drift-checked like the /etc keys, so an older stock.fp without it is not drift.
-W25_GATE_VERSION=35
+W25_GATE_VERSION=36
 FP=/var/lib/webosbrew/dts25/stock.fp
 # Where the installed copy of THIS script lives, and the boot hook that symlinks
 # to it. Named here, in the shared block, so the read-only probe can fingerprint
@@ -1166,6 +1166,10 @@ w25_appdts_start() {
 }
 w25_appdts_start
 w25_pt_start
+# Optional PCM/MAT policy: idle until an eligible decoded-DTS stream is proven.
+if [ -f /var/lib/webosbrew/dts25/pcm-multichannel ] && [ -f /var/lib/webosbrew/dts25/pcm-mat-watch.py ] && command -v python3 >/dev/null 2>&1; then
+  python3 /var/lib/webosbrew/dts25/pcm-mat-watch.py </dev/null >/dev/null 2>&1 &
+fi
 # --- APPLY 2c) container demuxers with DTS re-enabled (mp4/ts/m2ts DTS -> audio/x-dts).
 #         Patched isomp4/mpegtsdemux default dts_support=TRUE; patched matroska
 #         signals Dolby Vision profile 7. Bound BEFORE the regen below so the

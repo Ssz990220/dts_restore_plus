@@ -267,6 +267,13 @@
     setVal("sAppDtsLast", last
       ? new Date(last.at * 1000).toLocaleString() + ": " + last.message
       : "—", last ? (last.result === "on" ? "ok" : "warn") : null);
+    $("cardPcmMultichannel").hidden = !canW25Test;
+    $("btnPcmOn").disabled = !canW25Test || s.pcmMultichannelRequested === true;
+    $("btnPcmOff").disabled = !canW25Test || s.pcmMultichannelRequested !== true;
+    setVal("sPcmMode", !s.pcmMultichannelRequested ? "off"
+      : s.pcmMultichannelPhase === "mat-requested" ? "MAT requested — verify speaker placement"
+      : s.pcmMultichannelPhase === "waiting" ? "on — waiting for eligible DTS 5.1 playback"
+      : "on — " + (s.pcmMultichannelPhase || "waiting"), s.pcmMultichannelRequested ? "warn" : null);
     // DTS passthrough: also webOS 25 only, since it lives in the webOS 25 dtsdec.
     $("cardPassthrough").hidden = !canW25Test;
     $("btnPtOn").disabled  = !canW25Test || s.passthroughRequested === true;
@@ -475,6 +482,14 @@
       toast(res.summary || (on ? "Saved" : "Turned off"), res.returnValue ? "ok" : "err");
       return refreshStatus();
     }).catch(function (e) { toast("Could not change it: " + errText(e), "err"); });
+  }
+
+  function doPcmMultichannel(on) {
+    toast(on ? "Enabling PCM test…" : "Stopping PCM test…", "busy");
+    callService("setPcmMultichannel", {enabled: on}).then(function (res) {
+      toast(res.summary || "Saved", res.returnValue ? "ok" : "err");
+      return refreshStatus();
+    }).catch(function (e) { toast("PCM mode failed: " + errText(e), "err"); });
   }
 
   function doPassthrough(on) {
@@ -860,6 +875,8 @@
     $("btnAppDtsOn").addEventListener("click", function () { doAppDts(true); });
     $("btnAppDtsOff").addEventListener("click", function () { doAppDts(false); });
     $("btnAppDtsReboot").addEventListener("click", doAppDtsReboot);
+    $("btnPcmOn").addEventListener("click", function () { doPcmMultichannel(true); });
+    $("btnPcmOff").addEventListener("click", function () { doPcmMultichannel(false); });
     $("btnPtOn").addEventListener("click", function () { doPassthrough(true); });
     $("btnPtOff").addEventListener("click", function () { doPassthrough(false); });
     $("btnSaveGain").addEventListener("click", doSaveGain);
