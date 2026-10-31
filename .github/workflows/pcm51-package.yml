@@ -20,7 +20,7 @@ jobs:
     # The inherited shell fixtures explicitly wrap BSD /usr/bin/stat -f%z
     # and exercise macOS /bin/sh redirection behavior. Keep them on that host;
     # the new C5 policy and package checks below run on Linux.
-    runs-on: macos-14
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
