@@ -2653,7 +2653,7 @@ function w25Enable(force) {
     //     compiled rank 320) -- CORE, like dtsdec/libav (init_dts25.sh
     //     w25_core_staged). Mirrors install.sh step 1b.
     'if [ -f "' + PAYLOAD_W25 + '/libgstadecswitch.so" ]; then',
-    '  cp -f "' + PAYLOAD_W25 + '/libgstadecswitch.so" "' + W25_DEST + '/libgstadecswitch.so" && log "installed libgstadecswitch.so" || log "WARN: copy libgstadecswitch.so failed"',
+    '  cp -f "' + PAYLOAD_W25 + '/libgstadecswitch.so" "' + W25_DEST + '/libgstadecswitch.so.new" && mv -f "' + W25_DEST + '/libgstadecswitch.so.new" "' + W25_DEST + '/libgstadecswitch.so" && log "installed libgstadecswitch.so" || log "WARN: copy libgstadecswitch.so failed"',
     'else log "WARN: ' + PAYLOAD_W25 + '/libgstadecswitch.so not found (populate payload before packaging)"; fi',
     // 2. Stage the TrueHD payload (preserve the .so version symlinks).
     'mkdir -p "' + W25_THD_LIBS + '" || { log "FATAL: cannot create ' + W25_THD_LIBS + '"; exit 0; }',
