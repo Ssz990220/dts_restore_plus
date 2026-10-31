@@ -98,13 +98,24 @@ def candidate(row, state, app):
 
 
 def sink_proven(kernel_log, pid, since):
-    # LG's own setter logs this successful false -> true transition. Require
-    # it after this pipeline's resource timestamp, not an old NDL/app event.
+    # Require both this player's successful flag transition and the following
+    # native converter's eight-slot multichannel output (acmod 7). Setting the
+    # flag after the first caps event can leave the converter in stereo; that
+    # is not evidence for switching the eARC carrier to MAT.
     pattern = (r'^\[\s*([0-9]+\.[0-9]+)\].*\(0*' + str(pid)
                + r':\d+\).*lgao_set_pcm_multi_channel.*changing\s+0\s*->\s*1')
-    return any(float(m.group(1)) >= since - .1
-               for line in kernel_log.splitlines()
-               for m in [re.search(pattern, line)] if m)
+    transitions, converters = [], []
+    for line in kernel_log.splitlines():
+        match = re.search(pattern, line)
+        if match and float(match[1]) >= since - .1:
+            transitions.append(float(match[1]))
+        if 'Pcmcvt_Event.1332' in line:
+            match = re.search(r'^\[\s*([0-9.]+)\].*channels=\(int\)8'
+                              r'.*acmod=\(int\)7(?:\D|$)', line)
+            if match:
+                converters.append(float(match[1]))
+    return any(-.05 <= output - flag <= 1.0
+               for flag in transitions for output in converters)
 
 
 def find_candidate(app):

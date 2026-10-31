@@ -67,10 +67,26 @@ done:
   return result;
 }
 
+static gboolean
+dts_pcm_is_lg_sink (GstElement * element)
+{
+  GstElementFactory *factory = gst_element_get_factory (element);
+  GParamSpec *property = g_object_class_find_property (
+      G_OBJECT_GET_CLASS (element), "pcm-multi-ch");
+  gboolean identity = g_str_equal (G_OBJECT_TYPE_NAME (element), "GstLgAudioRender") ||
+      (factory != NULL && g_str_equal (gst_plugin_feature_get_name (
+          GST_PLUGIN_FEATURE (factory)), "audiosink"));
+  return identity && property != NULL &&
+      G_PARAM_SPEC_VALUE_TYPE (property) == G_TYPE_BOOLEAN &&
+      (property->flags & G_PARAM_READWRITE) == G_PARAM_READWRITE &&
+      !(property->flags & G_PARAM_CONSTRUCT_ONLY);
+}
+
 /* Called before the first decoded PCM caps/event. With a late/unlinked graph,
  * leave routing unchanged; this prototype does not attempt live rewiring. */
 static gboolean
-dts_pcm_target_enable (GstElement * decoder, DtsPcmTarget ** target)
+dts_pcm_target_enable_full (GstElement * decoder, DtsPcmTarget ** target,
+    GString *trace)
 {
   GstPad *output;
   guint hops;
@@ -81,8 +97,6 @@ dts_pcm_target_enable (GstElement * decoder, DtsPcmTarget ** target)
   for (hops = 0; output != NULL && hops < 64; hops++) {
     GstPad *peer = gst_pad_get_peer (output);
     GstElement *element;
-    GstElementFactory *factory;
-    GParamSpec *property;
     GstPad *only_input;
     guint proxies = 0;
 
@@ -104,8 +118,10 @@ dts_pcm_target_enable (GstElement * decoder, DtsPcmTarget ** target)
       gst_object_unref (peer);
       peer = inner;
     }
-    if (peer == NULL)
+    if (peer == NULL) {
+      if (trace) g_string_append (trace, "/unlinked");
       break;
+    }
     if (GST_IS_PROXY_PAD (peer)) {
       gst_object_unref (peer);
       break;
@@ -115,9 +131,11 @@ dts_pcm_target_enable (GstElement * decoder, DtsPcmTarget ** target)
       gst_object_unref (peer);
       break;
     }
+    if (trace) g_string_append_printf (trace, "/%s", G_OBJECT_TYPE_NAME (element));
     /* Do not enter a mixer/selector shared by another decoder. */
     only_input = dts_pcm_single_link (element, GST_PAD_SINK);
     if (only_input != peer) {
+      if (trace) g_string_append (trace, "/shared-input");
       if (only_input != NULL)
         gst_object_unref (only_input);
       gst_object_unref (peer);
@@ -126,15 +144,7 @@ dts_pcm_target_enable (GstElement * decoder, DtsPcmTarget ** target)
     }
     gst_object_unref (only_input);
     gst_object_unref (peer);
-    factory = gst_element_get_factory (element);
-    property = g_object_class_find_property (G_OBJECT_GET_CLASS (element),
-        "pcm-multi-ch");
-    if (factory != NULL &&
-        g_str_equal (gst_plugin_feature_get_name (GST_PLUGIN_FEATURE (factory)),
-            "audiosink") && property != NULL &&
-        G_PARAM_SPEC_VALUE_TYPE (property) == G_TYPE_BOOLEAN &&
-        (property->flags & G_PARAM_READWRITE) == G_PARAM_READWRITE &&
-        !(property->flags & G_PARAM_CONSTRUCT_ONLY)) {
+    if (dts_pcm_is_lg_sink (element)) {
       gboolean enabled = FALSE;
       g_object_get (element, "pcm-multi-ch", &enabled, NULL);
       if (!enabled) {
@@ -149,11 +159,18 @@ dts_pcm_target_enable (GstElement * decoder, DtsPcmTarget ** target)
       return enabled;
     }
     output = dts_pcm_single_link (element, GST_PAD_SRC);
+    if (output == NULL && trace) g_string_append (trace, "/no-single-output");
     gst_object_unref (element);
   }
   if (output != NULL)
     gst_object_unref (output);
   return FALSE;
+}
+
+static inline gboolean
+dts_pcm_target_enable (GstElement * decoder, DtsPcmTarget ** target)
+{
+  return dts_pcm_target_enable_full (decoder, target, NULL);
 }
 
 #endif

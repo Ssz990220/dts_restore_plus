@@ -38,8 +38,17 @@ class PolicyTests(unittest.TestCase):
         self.assertIsNone(p.candidate(self.row, self.state, 'moonfin'))
 
     def test_sink_proof_must_match_pid_and_current_pipeline(self):
-        log = '[ 100.123] lgao NOT (00123:00567) lgao_set_pcm_multi_channel changing 0 -> 1'
+        flag = '[ 100.123] lgao NOT (00123:00567) lgao_set_pcm_multi_channel changing 0 -> 1'
+        converter = ('[ 100.130] Pcmcvt_Event.1332 channels=(int)8, '
+                     'bits-per-sample=(int)32, acmod=(int)7')
+        log = flag + '\n' + converter
         self.assertTrue(p.sink_proven(log, 123, 100))
+        self.assertFalse(p.sink_proven(flag, 123, 100))
+        self.assertFalse(p.sink_proven(converter, 123, 100))
+        self.assertFalse(p.sink_proven(log.replace('channels=(int)8', 'channels=(int)2'), 123, 100))
+        self.assertFalse(p.sink_proven(log.replace('acmod=(int)7', 'acmod=(int)2'), 123, 100))
+        self.assertFalse(p.sink_proven(log.replace('100.130', '90.130'), 123, 100))
+        self.assertFalse(p.sink_proven(log.replace('100.130', '102.130'), 123, 100))
         self.assertFalse(p.sink_proven(log, 123, 102))
         self.assertFalse(p.sink_proven(log, 12, 100))
         self.assertFalse(p.sink_proven(log.replace('0 -> 1', '1 -> 0'), 123, 100))

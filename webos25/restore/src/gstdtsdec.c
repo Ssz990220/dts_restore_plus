@@ -117,7 +117,7 @@
 #include <libavutil/mem.h>
 
 #include "gstdtsdec.h"
-#include "gstwebospcm.h"
+#include "gstwebospcmwatch.h"
 
 /* webOS: LG's audiosink accepts only integer PCM (no F32/F64). Every FFmpeg
  * output format is converted to float per DRC block, then to S32LE
@@ -756,7 +756,7 @@ static void
 gst_dtsdec_finalize (GObject * object)
 {
   GstDtsDec *dts = GST_DTSDEC (object);
-  dts_pcm_target_release (&dts->pcm_target);
+  dts_pcm_watch_stop (&dts->pcm_watch);
   G_OBJECT_CLASS (gst_dtsdec_parent_class)->finalize (object);
 }
 
@@ -980,7 +980,7 @@ gst_dtsdec_init (GstDtsDec * dtsdec)
 
   dtsdec->pcm_multichannel = g_file_test (
       "/var/lib/webosbrew/dts25/pcm-multichannel", G_FILE_TEST_EXISTS);
-  dtsdec->pcm_target = NULL;
+  dtsdec->pcm_watch = NULL;
   dtsdec->dynamic_range_compression = FALSE;
 
   /* webOS 25 patch: defaults for make-up gain, DRC and centre boost come from
@@ -1066,7 +1066,7 @@ gst_dtsdec_stop (GstAudioDecoder * dec)
 
   GST_DEBUG_OBJECT (dec, "stop");
 
-  dts_pcm_target_release (&dts->pcm_target);
+  dts_pcm_watch_stop (&dts->pcm_watch);
 
   avcodec_free_context (&dts->avctx);
   av_frame_free (&dts->frame);
@@ -1312,11 +1312,12 @@ gst_dtsdec_renegotiate (GstDtsDec * dts)
   /* Set the flag before downstream sees its first PCM format event. Preserve
    * existing sample values, channel positions, and the FFmpeg reorder map.
    * Bitstream passthrough uses a separate format negotiation path below. */
-  dts_pcm_target_release (&dts->pcm_target);
+  dts_pcm_watch_stop (&dts->pcm_watch);
   if (dts->pcm_multichannel && !dts->pt_active &&
       channels == 6 && dts->sample_rate == 48000) {
-    gboolean configured = dts_pcm_target_enable (GST_ELEMENT (dts),
-        &dts->pcm_target);
+    gboolean configured;
+    dts->pcm_watch = dts_pcm_watch_new (GST_ELEMENT (dts));
+    configured = g_atomic_int_get (&dts->pcm_watch->resolved);
     GST_INFO_OBJECT (dts, "experimental PCM 5.1 sink configured=%d", configured);
     gst_element_post_message (GST_ELEMENT (dts),
         gst_message_new_element (GST_OBJECT (dts),

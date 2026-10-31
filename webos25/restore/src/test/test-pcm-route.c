@@ -1,10 +1,19 @@
 /* Host GStreamer graph tests; no LG hardware or FFmpeg is involved.
  * LGPL-2.0-or-later. The mock is registered only in this process. */
-#include "../gstwebospcm.h"
+#include "../gstwebospcmwatch.h"
 
-typedef struct { GstElement parent; gboolean multi; } MockAudioSink;
+typedef struct { GstElement parent; gboolean multi; gboolean event_multi; } MockAudioSink;
 typedef struct { GstElementClass parent; } MockAudioSinkClass;
 G_DEFINE_TYPE (MockAudioSink, mock_audio_sink, GST_TYPE_ELEMENT)
+
+static gboolean
+mock_event (GstPad * pad, GstObject * parent, GstEvent * event)
+{
+  (void) pad;
+  ((MockAudioSink *) parent)->event_multi = ((MockAudioSink *) parent)->multi;
+  gst_event_unref (event);
+  return TRUE;
+}
 
 static void
 mock_set (GObject * object, guint id, const GValue * value, GParamSpec * spec)
@@ -44,9 +53,11 @@ mock_audio_sink_class_init (MockAudioSinkClass * klass)
 static void
 mock_audio_sink_init (MockAudioSink * sink)
 {
-  GstPadTemplate *pad = gst_element_class_get_pad_template (
+  GstPadTemplate *templ = gst_element_class_get_pad_template (
       GST_ELEMENT_GET_CLASS (sink), "sink");
-  gst_element_add_pad (GST_ELEMENT (sink), gst_pad_new_from_template (pad, "sink"));
+  GstPad *pad = gst_pad_new_from_template (templ, "sink");
+  gst_pad_set_event_function (pad, mock_event);
+  gst_element_add_pad (GST_ELEMENT (sink), pad);
 }
 
 static gboolean
@@ -116,6 +127,51 @@ check_shared_paths (gboolean joining)
   gst_object_unref (pipeline);
 }
 
+static void
+check_late_sink (gboolean added_late)
+{
+  GstElement *pipeline = gst_pipeline_new (NULL);
+  GstElement *decoder = gst_element_factory_make ("identity", NULL);
+  GstElement *sink = gst_element_factory_make ("audiosink", NULL);
+  GstElement *unrelated = gst_element_factory_make ("audiosink", NULL);
+  GstPad *output, *input;
+  DtsPcmWatch *watch;
+  gst_bin_add_many (GST_BIN (pipeline), decoder, unrelated, NULL);
+  if (!added_late)
+    gst_bin_add (GST_BIN (pipeline), sink);
+  watch = dts_pcm_watch_new (decoder);
+  g_assert_false (enabled (unrelated));
+  g_assert_false (enabled (sink));
+  /* Unrelated startup events must not exhaust the eventual route retry. */
+  input = gst_element_get_static_pad (unrelated, "sink");
+  gst_pad_set_active (input, TRUE);
+  for (guint i = 0; i < 20; i++)
+    gst_pad_send_event (input, gst_event_new_stream_start ("unrelated"));
+  gst_pad_set_active (input, FALSE);
+  gst_object_unref (input);
+  if (added_late)
+    gst_bin_add (GST_BIN (pipeline), sink);
+  g_assert_true (gst_element_link (decoder, sink));
+  output = gst_element_get_static_pad (decoder, "src");
+  input = gst_element_get_static_pad (sink, "sink");
+  gst_pad_set_active (output, TRUE);
+  gst_pad_set_active (input, TRUE);
+  g_assert_true (gst_pad_push_event (output, gst_event_new_stream_start ("own")));
+  g_assert_true (((MockAudioSink *) sink)->event_multi);
+  g_assert_true (enabled (sink));
+  g_assert_false (enabled (unrelated));
+  dts_pcm_watch_stop (&watch);
+  g_assert_null (watch);
+  g_assert_false (enabled (sink));
+  g_assert_true (gst_pad_push_event (output, gst_event_new_stream_start ("stopped")));
+  g_assert_false (((MockAudioSink *) sink)->event_multi);
+  gst_pad_set_active (input, FALSE);
+  gst_pad_set_active (output, FALSE);
+  gst_object_unref (input);
+  gst_object_unref (output);
+  gst_object_unref (pipeline);
+}
+
 int
 main (int argc, char **argv)
 {
@@ -129,6 +185,8 @@ main (int argc, char **argv)
   check_route (FALSE, TRUE);
   check_shared_paths (FALSE);
   check_shared_paths (TRUE);
+  check_late_sink (FALSE);
+  check_late_sink (TRUE);
   decoder = gst_element_factory_make ("identity", NULL);
   g_assert_false (dts_pcm_target_enable (decoder, &target));
   gst_object_unref (decoder);

@@ -9,7 +9,7 @@ on:
       tag:
         description: Fixed experimental release tag
         required: true
-        default: pcm51-test-2.7.47
+        default: pcm51-test-2.7.48
 
 permissions:
   contents: write
@@ -53,7 +53,7 @@ jobs:
           gh run download "$DECODER_RUN" -n pcm51-decoder-armel -D /tmp/decoder
           SOURCE=$(cat /tmp/decoder/source-commit.txt)
           test "$SOURCE" = "$(gh run view "$DECODER_RUN" --json headSha --jq .headSha)"
-          git diff --exit-code "$SOURCE" HEAD -- webos25/restore/src/gstdtsdec.c webos25/restore/src/gstdtsdec.h webos25/restore/src/gstwebospcm.h webos25/restore/build.sh
+          git diff --exit-code "$SOURCE" HEAD -- webos25/restore/src/gstdtsdec.c webos25/restore/src/gstdtsdec.h webos25/restore/src/gstwebospcm.h webos25/restore/src/gstwebospcmwatch.h webos25/restore/build.sh
           EXPECTED=$(awk '{print $1}' /tmp/decoder/SHA256SUMS)
           test "$EXPECTED" = "$(sha256sum /tmp/decoder/libgstdtsdec.so | cut -d' ' -f1)"
           cp /tmp/decoder/libgstdtsdec.so webos25/restore/out/libgstdtsdec.so
@@ -84,7 +84,7 @@ jobs:
       - name: Publish explicitly experimental release
         run: |
           gh release create "$RELEASE_TAG" --target "$GITHUB_SHA" --prerelease \
-            --title 'DTS Enabler PCM 5.1 — C5 test 2.7.47' \
+            --title 'DTS Enabler PCM 5.1 — C5 test 2.7.48' \
             --notes-file webos25/app/PCM-TEST-NOTICE.txt \
             webos25/app/dist/*.ipk webos25/app/dist/*.manifest.json webos25/app/dist/build-provenance.json
       - uses: actions/setup-python@v5

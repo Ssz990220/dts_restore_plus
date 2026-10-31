@@ -119,7 +119,7 @@ struct _GstDtsDec {
 
   /* Experimental, next-stream opt-in. No global audio policy writes. */
   gboolean       pcm_multichannel;
-  struct _DtsPcmTarget *pcm_target;
+  struct _DtsPcmWatch *pcm_watch;
 
   struct AVCodecContext *avctx;
   struct AVFrame *frame;
