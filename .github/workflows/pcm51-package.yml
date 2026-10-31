@@ -16,7 +16,19 @@ permissions:
   actions: read
 
 jobs:
+  compatibility:
+    # The inherited shell fixtures explicitly wrap BSD /usr/bin/stat -f%z
+    # and exercise macOS /bin/sh redirection behavior. Keep them on that host;
+    # the new C5 policy and package checks below run on Linux.
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: node --test webos25/app/service/test/profile-compat.test.js
   package:
+    needs: compatibility
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     env:
@@ -50,7 +62,6 @@ jobs:
           node --check webos25/app/service/service.js
           node --check webos25/app/service/pcm-mode.js
           node --check webos25/app/js/app.js
-          node --test webos25/app/service/test/profile-compat.test.js
           python3 webos25/restore/src/test/test-pcm-policy.py
           sh webos25/restore/check-init-sync.sh
           sh webos25/restore/check-manifest-floor.sh

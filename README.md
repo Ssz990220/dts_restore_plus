@@ -1,3 +1,11 @@
+> **PCM 5.1 development fork (LG C5 / webOS 25):** This fork adds an
+> experimental opt-in decoded-PCM route and a guarded MAT policy. The new
+> decoder has passed an isolated six-channel decode on the TV; complete native
+> playback and physical channel validation are still pending. No 7.1 success
+> is claimed. Use the fixed experimental Homebrew release, not the upstream
+> download links in the historical documentation below.
+> Source: https://github.com/Ssz990220/dts_restore_plus
+
 # dts_restore
 
 https://github.com/josippapez/dts_restore_plus
