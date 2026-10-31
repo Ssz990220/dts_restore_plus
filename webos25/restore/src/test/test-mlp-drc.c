@@ -52,6 +52,25 @@ near (double got, double want, double tol, const char *label)
 #define CENTER_CH 2
 #define LFE2_CH 5
 
+/* Sequence the count update before reading it. C does not specify the
+ * evaluation order of function arguments; GCC evaluated the old count first. */
+static float
+test_planar_level (const float *data, int channels, int samples, int lfe,
+    int *count)
+{
+  double sum = dts_drc_sum_squares (data, channels, samples, lfe, count);
+  return dts_drc_level_dbfs (sum, *count);
+}
+
+static float
+test_interleaved_level (const void *data, int samples, int channels, int lfe,
+    int lfe2, int s32, int *count)
+{
+  double sum = mlp_drc_sum_squares_ilv (data, samples, channels, lfe, lfe2, s32,
+      count);
+  return dts_drc_level_dbfs (sum, *count);
+}
+
 /* ---------------------------------------------------------------------------
  * 1. Detector parity: the interleaved-integer detector must land on the SAME
  *    dBFS as the DTS side's planar-float detector for the same audio.
@@ -84,18 +103,18 @@ test_detector_parity (void)
     }
 
     /* no channel skipped, so both detectors see the same sample set */
-    lvl_p = dts_drc_level_dbfs (dts_drc_sum_squares (planar, NCH, NSMP, -1,
-            &count_p), count_p);
-    lvl_32 = dts_drc_level_dbfs (mlp_drc_sum_squares_ilv (ilv32, NSMP, NCH, -1,
-            -1, 1, &count_i), count_i);
+    lvl_p = test_planar_level (planar, NCH, NSMP, -1,
+            &count_p);
+    lvl_32 = test_interleaved_level (ilv32, NSMP, NCH, -1,
+            -1, 1, &count_i);
     report (count_p == count_i && count_p == NCH * NSMP,
         "sample counts agree");
     snprintf (label, sizeof (label), "amp %.3f: S32 detector == planar float",
         a);
     near (lvl_32, lvl_p, 0.01, label);
 
-    lvl_16 = dts_drc_level_dbfs (mlp_drc_sum_squares_ilv (ilv16, NSMP, NCH, -1,
-            -1, 0, &count_i), count_i);
+    lvl_16 = test_interleaved_level (ilv16, NSMP, NCH, -1,
+            -1, 0, &count_i);
     snprintf (label, sizeof (label), "amp %.3f: S16 detector == planar float",
         a);
     /* S16 quantisation is the only difference, and it grows as the signal
@@ -123,8 +142,8 @@ test_lfe_exclusion (void)
   for (n = 0; n < NSMP; n++)
     ilv[n * NCH + LFE_CH] = 2147483647;
 
-  lvl = dts_drc_level_dbfs (mlp_drc_sum_squares_ilv (ilv, NSMP, NCH, LFE_CH, -1, 1,
-          &count), count);
+  lvl = test_interleaved_level (ilv, NSMP, NCH, LFE_CH, -1, 1,
+          &count);
   report (count == (NCH - 1) * NSMP, "LFE samples are not counted");
   near (lvl, DTS_DRC_LEVEL_FLOOR_DB, 1e-4,
       "full-scale LFE alone -> detector floor");
@@ -133,8 +152,8 @@ test_lfe_exclusion (void)
 
   /* Same buffer WITHOUT the exclusion would read far louder — proves the
    * skip argument is load-bearing, not decorative. */
-  lvl = dts_drc_level_dbfs (mlp_drc_sum_squares_ilv (ilv, NSMP, NCH, -1, -1, 1,
-          &count), count);
+  lvl = test_interleaved_level (ilv, NSMP, NCH, -1, -1, 1,
+          &count);
   report (lvl > -10.0f, "negative control: including the LFE reads loud");
 
   /* A TrueHD layout can carry a SECOND LFE (AV_CH_LOW_FREQUENCY_2 is in
@@ -145,13 +164,13 @@ test_lfe_exclusion (void)
     ilv[n * NCH + LFE_CH] = 2147483647;
     ilv[n * NCH + LFE2_CH] = 2147483647;
   }
-  lvl = dts_drc_level_dbfs (mlp_drc_sum_squares_ilv (ilv, NSMP, NCH, LFE_CH,
-          LFE2_CH, 1, &count), count);
+  lvl = test_interleaved_level (ilv, NSMP, NCH, LFE_CH,
+          LFE2_CH, 1, &count);
   report (count == (NCH - 2) * NSMP, "both LFE channels are skipped");
   near (lvl, DTS_DRC_LEVEL_FLOOR_DB, 1e-4,
       "full-scale LFE + LFE2 alone -> detector floor");
-  lvl = dts_drc_level_dbfs (mlp_drc_sum_squares_ilv (ilv, NSMP, NCH, LFE_CH,
-          -1, 1, &count), count);
+  lvl = test_interleaved_level (ilv, NSMP, NCH, LFE_CH,
+          -1, 1, &count);
   report (lvl > -10.0f,
       "negative control: skipping only LFE1 still reads the LFE2 signal");
 }
