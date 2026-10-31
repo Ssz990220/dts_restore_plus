@@ -128,16 +128,17 @@ check_shared_paths (gboolean joining)
 }
 
 static void
-check_late_sink (gboolean added_late)
+check_late_sink (guint mode)
 {
   GstElement *pipeline = gst_pipeline_new (NULL);
   GstElement *decoder = gst_element_factory_make ("identity", NULL);
   GstElement *sink = gst_element_factory_make ("audiosink", NULL);
+  GstElement *endpoint = sink;
   GstElement *unrelated = gst_element_factory_make ("audiosink", NULL);
   GstPad *output, *input;
   DtsPcmWatch *watch;
   gst_bin_add_many (GST_BIN (pipeline), decoder, unrelated, NULL);
-  if (!added_late)
+  if (mode == 0)
     gst_bin_add (GST_BIN (pipeline), sink);
   watch = dts_pcm_watch_new (decoder);
   g_assert_false (enabled (unrelated));
@@ -149,13 +150,28 @@ check_late_sink (gboolean added_late)
     gst_pad_send_event (input, gst_event_new_stream_start ("unrelated"));
   gst_pad_set_active (input, FALSE);
   gst_object_unref (input);
-  if (added_late)
+  if (mode == 2) {
+    GstElement *bin = gst_bin_new (NULL);
+    GstPad *pad;
+    gst_bin_add (GST_BIN (bin), sink);
+    pad = gst_element_get_static_pad (sink, "sink");
+    gst_element_add_pad (bin, gst_ghost_pad_new ("sink", pad));
+    gst_object_unref (pad);
+    gst_bin_add (GST_BIN (pipeline), bin);
+    endpoint = bin;
+  } else if (mode == 1) {
     gst_bin_add (GST_BIN (pipeline), sink);
-  g_assert_true (gst_element_link (decoder, sink));
+  }
+  g_assert_true (gst_element_link (decoder, endpoint));
   output = gst_element_get_static_pad (decoder, "src");
   input = gst_element_get_static_pad (sink, "sink");
   gst_pad_set_active (output, TRUE);
   gst_pad_set_active (input, TRUE);
+  if (mode == 2) {
+    GstPad *ghost = gst_element_get_static_pad (endpoint, "sink");
+    gst_pad_set_active (ghost, TRUE);
+    gst_object_unref (ghost);
+  }
   g_assert_true (gst_pad_push_event (output, gst_event_new_stream_start ("own")));
   g_assert_true (((MockAudioSink *) sink)->event_multi);
   g_assert_true (enabled (sink));
@@ -167,6 +183,11 @@ check_late_sink (gboolean added_late)
   g_assert_false (((MockAudioSink *) sink)->event_multi);
   gst_pad_set_active (input, FALSE);
   gst_pad_set_active (output, FALSE);
+  if (mode == 2) {
+    GstPad *ghost = gst_element_get_static_pad (endpoint, "sink");
+    gst_pad_set_active (ghost, FALSE);
+    gst_object_unref (ghost);
+  }
   gst_object_unref (input);
   gst_object_unref (output);
   gst_object_unref (pipeline);
@@ -185,8 +206,9 @@ main (int argc, char **argv)
   check_route (FALSE, TRUE);
   check_shared_paths (FALSE);
   check_shared_paths (TRUE);
-  check_late_sink (FALSE);
-  check_late_sink (TRUE);
+  check_late_sink (0);
+  check_late_sink (1);
+  check_late_sink (2);
   decoder = gst_element_factory_make ("identity", NULL);
   g_assert_false (dts_pcm_target_enable (decoder, &target));
   gst_object_unref (decoder);
