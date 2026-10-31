@@ -25,5 +25,6 @@ provenance = dict(repository=repo, release=tag,
                   app_commit=subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
                   decoder_commit=Path(decoder_commit_file).read_text().strip(),
                   decoder_sha256=hashlib.sha256(Path('webos25/restore/out/libgstdtsdec.so').read_bytes()).hexdigest(),
+                  switch_sha256=hashlib.sha256(Path('webos25/restore/switch-out/libgstadecswitch.so').read_bytes()).hexdigest(),
                   ipk_sha256=manifest['ipkHash']['sha256'], status='experimental: physical channel test required')
 (root / 'dist/build-provenance.json').write_text(json.dumps(provenance, indent=2) + '\n')

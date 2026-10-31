@@ -9,7 +9,11 @@ on:
       tag:
         description: Fixed experimental release tag
         required: true
-        default: pcm51-test-2.7.51
+        default: pcm51-test-2.7.52
+      publish:
+        description: Publish after on-device validation and committing both binaries
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -53,10 +57,14 @@ jobs:
           gh run download "$DECODER_RUN" -n pcm51-decoder-armel -D /tmp/decoder
           SOURCE=$(cat /tmp/decoder/source-commit.txt)
           test "$SOURCE" = "$(gh run view "$DECODER_RUN" --json headSha --jq .headSha)"
-          git diff --exit-code "$SOURCE" HEAD -- webos25/restore/src/gstdtsdec.c webos25/restore/src/gstdtsdec.h webos25/restore/src/gstwebospcm.h webos25/restore/src/gstwebospcmwatch.h webos25/restore/build.sh
-          EXPECTED=$(awk '{print $1}' /tmp/decoder/SHA256SUMS)
-          test "$EXPECTED" = "$(sha256sum /tmp/decoder/libgstdtsdec.so | cut -d' ' -f1)"
+          git diff --exit-code "$SOURCE" HEAD -- webos25/restore/src/gstdtsdec.c webos25/restore/src/gstdtsdec.h webos25/restore/src/gstadecswitch.c webos25/restore/src/gstadecswitch.h webos25/restore/src/gstwebospcm.h webos25/restore/src/gstwebospcmwatch.h webos25/restore/build.sh
+          (cd /tmp/decoder && sha256sum --check SHA256SUMS)
+          if [ '${{ inputs.publish }}' = true ]; then
+            cmp /tmp/decoder/libgstdtsdec.so webos25/restore/out/libgstdtsdec.so
+            cmp /tmp/decoder/libgstadecswitch.so webos25/restore/switch-out/libgstadecswitch.so
+          fi
           cp /tmp/decoder/libgstdtsdec.so webos25/restore/out/libgstdtsdec.so
+          cp /tmp/decoder/libgstadecswitch.so webos25/restore/switch-out/libgstadecswitch.so
       - name: Test app and policy packaging
         run: |
           node --check webos25/app/service/service.js
@@ -81,16 +89,23 @@ jobs:
           mkdir -p webos25/app/dist
           (cd webos25/app && ares-package . service -o dist)
           python3 packaging/homebrew/pcm-manifest.py "$GH_REPO" "$RELEASE_TAG" /tmp/decoder/source-commit.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pcm-test-package
+          path: webos25/app/dist/
       - name: Publish explicitly experimental release
+        if: inputs.publish
         run: |
           gh release create "$RELEASE_TAG" --target "$GITHUB_SHA" --prerelease \
-            --title 'DTS Enabler PCM 5.1 — C5 test 2.7.51' \
+            --title 'DTS Enabler multichannel PCM — C5 test' \
             --notes-file webos25/app/PCM-TEST-NOTICE.txt \
             webos25/app/dist/*.ipk webos25/app/dist/*.manifest.json webos25/app/dist/build-provenance.json
       - uses: actions/setup-python@v5
+        if: inputs.publish
         with:
           python-version: '3.11'
       - name: Generate fixed-release Homebrew repository
+        if: inputs.publish
         env:
           CI: ''
         run: |
@@ -103,6 +118,7 @@ jobs:
           cp -r /tmp/apps-repo/content/api/* /tmp/pages/api/
           touch /tmp/pages/.nojekyll
       - name: Publish fork repository index
+        if: inputs.publish
         run: |
           cd /tmp/pages
           git init -b gh-pages

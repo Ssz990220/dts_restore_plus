@@ -97,7 +97,7 @@ docker run --rm -i --platform "$BUILD_PLATFORM" \
       || { echo "ERROR: FFmpeg configured without the dca decoder"; exit 1; }
 
     # Work on a writable copy (source mount is read-only).
-    cp /work/gstdtsdec.c /work/gstdtsdec.h /work/gstwebospcm.h /work/gstwebospcmwatch.h /tmp/
+    cp /work/gstdtsdec.c /work/gstdtsdec.h /work/gstadecswitch.c /work/gstadecswitch.h /work/gstwebospcm.h /work/gstwebospcmwatch.h /tmp/
     cd /tmp
 
     # Sanity: confirm the caps patch is already present in the vendored source.
@@ -122,6 +122,14 @@ docker run --rm -i --platform "$BUILD_PLATFORM" \
       -DGST_PACKAGE_ORIGIN='"https://github.com/josippapez/dts_restore"' \
       $CF /tmp/ffdca/lib/libavcodec.a /tmp/ffdca/lib/libavutil.a $LB -lm \
       -Wl,--exclude-libs,ALL -Wl,--no-undefined
+
+    arm-linux-gnueabi-gcc -shared -fPIC -O2 -Wall -o /out/libgstadecswitch.so \
+      gstadecswitch.c -DVERSION='"1.24.0-webosdts"' \
+      -DPACKAGE='"dts_restore_plus"' -DGST_PACKAGE_NAME='"WebOS PCM restore"' \
+      -DGST_PACKAGE_ORIGIN='"https://github.com/Ssz990220/dts_restore_plus"' \
+      $CF $LB -Wl,--no-undefined
+    arm-linux-gnueabi-strip --strip-unneeded /out/libgstadecswitch.so
+    arm-linux-gnueabi-readelf -h /out/libgstadecswitch.so | grep 'soft-float ABI'
 
     echo "=== BUILT ==="
     file -b /out/libgstdtsdec.so | cut -d, -f1-4

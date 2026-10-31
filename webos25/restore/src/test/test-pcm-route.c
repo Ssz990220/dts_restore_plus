@@ -1,6 +1,14 @@
 /* Host GStreamer graph tests; no LG hardware or FFmpeg is involved.
  * LGPL-2.0-or-later. The mock is registered only in this process. */
 #include "../gstwebospcmwatch.h"
+#define VERSION "test"
+#define PACKAGE "pcm-route-tests"
+#define GST_PACKAGE_NAME "PCM route tests"
+#define GST_PACKAGE_ORIGIN "https://gstreamer.freedesktop.org/"
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-parameter"
+#include "../gstadecswitch.c"
+#pragma GCC diagnostic pop
 
 typedef struct { GstElement parent; gboolean multi; gboolean event_multi; } MockAudioSink;
 typedef struct { GstElementClass parent; } MockAudioSinkClass;
@@ -234,6 +242,73 @@ check_synchronized_streams (void)
   gst_object_unref (pipeline);
 }
 
+static void
+check_switch_pcm_layouts (void)
+{
+  GstElement *pipeline = gst_pipeline_new (NULL);
+  GstElement *bin = gst_element_factory_make ("adecswitch", NULL);
+  GstAdecSwitch *self = GST_ADECSWITCH (bin);
+  GstElement *inner = gst_element_factory_make ("identity", NULL);
+  GstElement *sink = gst_element_factory_make ("audiosink", NULL);
+  GstElement *other = gst_element_factory_make ("audiosink", NULL);
+  GstPad *output, *input;
+  struct {
+    gint channels, rate;
+    guint64 mask;
+    const gchar *decoder;
+    gboolean expected;
+  } cases[] = {
+    { 6, 48000, 0xc0f, "dtsdec", TRUE },
+    { 8, 48000, 0xc3f, "avdec_truehd", TRUE },
+    { 6, 48000, 0x3f, "avdec_mlp", TRUE },
+    { 8, 48000, 0xff, "dtsdec", FALSE },
+    { 8, 96000, 0xc3f, "avdec_truehd", FALSE },
+    { 2, 48000, 3, "dtsdec", FALSE },
+    { 8, 48000, 0xc3f, "avdec_flac", FALSE },
+    { 8, 48000, 0xc3f, "dtsdec", TRUE }
+  };
+
+  gst_bin_add_many (GST_BIN (pipeline), bin, sink, other, NULL);
+  gst_bin_add (GST_BIN (bin), inner);
+  output = gst_element_get_static_pad (inner, "src");
+  g_assert_true (gst_ghost_pad_set_target (GST_GHOST_PAD (self->srcpad), output));
+  g_assert_true (gst_element_link (bin, sink));
+  input = gst_element_get_static_pad (sink, "sink");
+  g_object_set (bin, "pcm-multichannel", TRUE, NULL);
+  gst_pad_set_active (output, TRUE);
+  gst_pad_set_active (self->srcpad, TRUE);
+  gst_pad_set_active (input, TRUE);
+  g_assert_true (gst_pad_push_event (output, gst_event_new_stream_start ("pcm")));
+  for (guint i = 0; i < G_N_ELEMENTS (cases); i++) {
+    GstCaps *caps = gst_caps_new_simple ("audio/x-raw", "format", G_TYPE_STRING,
+        "S32LE", "layout", G_TYPE_STRING, "interleaved", "channels", G_TYPE_INT,
+        cases[i].channels, "rate", G_TYPE_INT, cases[i].rate,
+        "channel-mask", GST_TYPE_BITMASK, cases[i].mask, NULL);
+    self->decoder_factory = cases[i].decoder;
+    g_assert_true (gst_pad_push_event (output, gst_event_new_caps (caps)));
+    g_assert_cmpint (enabled (sink), ==, cases[i].expected);
+    g_assert_cmpint (((MockAudioSink *) sink)->event_multi, ==, cases[i].expected);
+    g_assert_false (enabled (other));
+    gst_caps_unref (caps);
+  }
+  /* Disabled mode must release its own flag before the next format arrives. */
+  g_object_set (bin, "pcm-multichannel", FALSE, NULL);
+  {
+    GstCaps *caps = gst_caps_new_simple ("audio/x-raw", "channels", G_TYPE_INT,
+        8, "rate", G_TYPE_INT, 48000, "channel-mask", GST_TYPE_BITMASK,
+        (guint64) 0xc3f, NULL);
+    g_assert_true (gst_pad_push_event (output, gst_event_new_caps (caps)));
+    gst_caps_unref (caps);
+  }
+  g_assert_false (enabled (sink));
+  gst_pad_set_active (input, FALSE);
+  gst_pad_set_active (self->srcpad, FALSE);
+  gst_pad_set_active (output, FALSE);
+  gst_object_unref (input);
+  gst_object_unref (output);
+  gst_object_unref (pipeline);
+}
+
 int
 main (int argc, char **argv)
 {
@@ -242,6 +317,7 @@ main (int argc, char **argv)
   gst_init (&argc, &argv);
   g_assert_true (gst_element_register (NULL, "audiosink", GST_RANK_NONE,
           mock_audio_sink_get_type ()));
+  g_assert_true (plugin_init (NULL));
   check_route (FALSE, FALSE);
   check_route (TRUE, FALSE);
   check_route (FALSE, TRUE);
@@ -251,6 +327,7 @@ main (int argc, char **argv)
   check_late_sink (1);
   check_late_sink (2);
   check_synchronized_streams ();
+  check_switch_pcm_layouts ();
   decoder = gst_element_factory_make ("identity", NULL);
   g_assert_false (dts_pcm_target_enable (decoder, &target));
   gst_object_unref (decoder);

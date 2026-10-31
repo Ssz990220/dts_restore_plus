@@ -55,6 +55,9 @@ struct _GstAdecSwitch
   /* Properties */
   guint grace_ms;               /* hw-teardown-grace-ms */
   gboolean post_changing_decoder;
+  gboolean pcm_multichannel;
+  GMutex pcm_lock;
+  struct _DtsPcmWatch *pcm_watch;
 };
 
 G_END_DECLS

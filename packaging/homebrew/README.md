@@ -61,3 +61,14 @@ the `.ipk`, regenerates the manifest with the new version + hash, and uploads bo
 to the release. Because the registry's `manifestUrl` points at
 `releases/latest/download/…`, HBC picks up the new version automatically — no
 apps-repo change required.
+
+## C5 multichannel PCM preview workflow
+
+The fork's `pcm51-build.yml` builds both `dtsdec` and `adecswitch` from source.
+Run `pcm51-package.yml` with `publish=false` to obtain a checksum-identified IPK
+as the `pcm-test-package` Actions artifact, without creating a release or
+changing the public Homebrew index. Verify this preview on the rooted TV.
+Commit the matching tested binaries to `restore/out` and `restore/switch-out`
+before invoking the same workflow with `publish=true`; publication refuses
+if those committed binaries differ from the source-build artifact.
+Experimental releases use fixed `pcm51-test-*` prerelease tags in this fork.

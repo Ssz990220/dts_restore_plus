@@ -37,6 +37,7 @@
 #endif
 
 #include "gstadecswitch.h"
+#include "gstwebospcmwatch.h"
 
 GST_DEBUG_CATEGORY_STATIC (adecswitch_debug);
 #define GST_CAT_DEFAULT adecswitch_debug
@@ -58,7 +59,8 @@ enum
 {
   PROP_0,
   PROP_HW_TEARDOWN_GRACE_MS,
-  PROP_POST_CHANGING_DECODER
+  PROP_POST_CHANGING_DECODER,
+  PROP_PCM_MULTICHANNEL
 };
 
 /* Every family we can host, so decodebin3's accept-caps probe on our sink pad
@@ -184,6 +186,56 @@ gst_adecswitch_is_decproxy (GstElement * element)
 
   return factory != NULL
       && !g_strcmp0 (GST_OBJECT_NAME (factory), DECPROXY_FACTORY);
+}
+
+static void
+gst_adecswitch_pcm_stop (GstAdecSwitch * self)
+{
+  g_mutex_lock (&self->pcm_lock);
+  dts_pcm_watch_stop (&self->pcm_watch);
+  g_mutex_unlock (&self->pcm_lock);
+}
+
+/* Own the output flag at the decoder-switching bin, so a DTS -> TrueHD
+ * switch cannot leave ownership with an asynchronously removed decoder.
+ * Only standard 48 kHz 5.1/7.1 PCM layouts from our software decoders qualify.
+ * Hardware Dolby's audio/x-media path is never configured here. */
+static GstPadProbeReturn
+gst_adecswitch_pcm_caps_probe (GstPad * pad, GstPadProbeInfo * info,
+    gpointer data)
+{
+  GstAdecSwitch *self = GST_ADECSWITCH (data);
+  GstEvent *event = GST_PAD_PROBE_INFO_EVENT (info);
+  GstCaps *caps = NULL;
+  const GstStructure *s;
+  gint channels = 0, rate = 0;
+  guint64 mask = 0;
+  gboolean eligible = FALSE;
+  (void) pad;
+
+  if (GST_EVENT_TYPE (event) != GST_EVENT_CAPS)
+    return GST_PAD_PROBE_OK;
+  gst_event_parse_caps (event, &caps);
+  if (caps != NULL && !gst_caps_is_empty (caps)) {
+    s = gst_caps_get_structure (caps, 0);
+    eligible = self->pcm_multichannel &&
+        self->decoder_factory != NULL &&
+        (g_str_equal (self->decoder_factory, "dtsdec") ||
+         g_str_equal (self->decoder_factory, "avdec_truehd") ||
+         g_str_equal (self->decoder_factory, "avdec_mlp")) &&
+        gst_structure_has_name (s, "audio/x-raw") &&
+        gst_structure_get_int (s, "channels", &channels) &&
+        gst_structure_get_int (s, "rate", &rate) && rate == 48000 &&
+        gst_structure_get (s, "channel-mask", GST_TYPE_BITMASK, &mask, NULL) &&
+        ((channels == 6 && (mask == 0xc0f || mask == 0x3f)) ||
+         (channels == 8 && mask == 0xc3f));
+  }
+  g_mutex_lock (&self->pcm_lock);
+  dts_pcm_watch_stop (&self->pcm_watch);
+  if (eligible)
+    self->pcm_watch = dts_pcm_watch_new (GST_ELEMENT (self));
+  g_mutex_unlock (&self->pcm_lock);
+  return GST_PAD_PROBE_OK;
 }
 
 /* CAPS and ACCEPT_CAPS are answered from the static template, NEVER from the
@@ -370,6 +422,7 @@ gst_adecswitch_sink_event_probe (GstPad * pad, GstPadProbeInfo * info,
   }
 
   old_decoder = self->decoder;
+  gst_adecswitch_pcm_stop (self);
   is_hw = !g_strcmp0 (factory_name, DECPROXY_FACTORY);
   GST_INFO_OBJECT (self, "switching inner decoder %s -> %s for %" GST_PTR_FORMAT,
       self->decoder_factory ? self->decoder_factory : "(none)", factory_name,
@@ -401,6 +454,14 @@ gst_adecswitch_sink_event_probe (GstPad * pad, GstPadProbeInfo * info,
         ("no '%s' element to decode %" GST_PTR_FORMAT, factory_name, caps));
     return GST_PAD_PROBE_DROP;
   }
+
+  /* This bin owns PCM routing for native playback. Disable the older DTS
+   * decoder-local owner before READY, avoiding a late false reset when that
+   * child is removed after selecting TrueHD. Standalone dtsdec is unchanged. */
+  if (self->pcm_multichannel && g_str_equal (factory_name, "dtsdec") &&
+      g_object_class_find_property (G_OBJECT_GET_CLASS (decoder),
+          "pcm-multichannel"))
+    g_object_set (decoder, "pcm-multichannel", FALSE, NULL);
 
   if (is_hw
       && g_object_class_find_property (G_OBJECT_GET_CLASS (decoder),
@@ -501,6 +562,7 @@ gst_adecswitch_change_state (GstElement * element, GstStateChange transition)
    * and the old decoder is locked-state so gst_bin_element_set_state() skips
    * it (gstbin.c:2489-2501). */
   if (transition == GST_STATE_CHANGE_PAUSED_TO_READY) {
+    gst_adecswitch_pcm_stop (self);
     gst_adecswitch_wait_hw_teardown (self, 0, 2 * G_TIME_SPAN_SECOND);
 
     if (self->parked_hw != NULL) {
@@ -531,6 +593,9 @@ gst_adecswitch_set_property (GObject * object, guint prop_id,
     case PROP_POST_CHANGING_DECODER:
       self->post_changing_decoder = g_value_get_boolean (value);
       break;
+    case PROP_PCM_MULTICHANNEL:
+      self->pcm_multichannel = g_value_get_boolean (value);
+      break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
       break;
@@ -550,6 +615,9 @@ gst_adecswitch_get_property (GObject * object, guint prop_id, GValue * value,
     case PROP_POST_CHANGING_DECODER:
       g_value_set_boolean (value, self->post_changing_decoder);
       break;
+    case PROP_PCM_MULTICHANNEL:
+      g_value_set_boolean (value, self->pcm_multichannel);
+      break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
       break;
@@ -562,6 +630,7 @@ gst_adecswitch_finalize (GObject * object)
   GstAdecSwitch *self = GST_ADECSWITCH (object);
 
   g_mutex_clear (&self->lock);
+  g_mutex_clear (&self->pcm_lock);
   g_cond_clear (&self->cond);
 
   G_OBJECT_CLASS (gst_adecswitch_parent_class)->finalize (object);
@@ -571,6 +640,8 @@ static void
 gst_adecswitch_dispose (GObject * object)
 {
   GstAdecSwitch *self = GST_ADECSWITCH (object);
+
+  gst_adecswitch_pcm_stop (self);
 
   /* The current inner decoder is never torn down by
    * gst_adecswitch_teardown_decoder() — that only runs on a family switch —
@@ -617,6 +688,12 @@ gst_adecswitch_class_init (GstAdecSwitchClass * klass)
           DEFAULT_POST_CHANGING_DECODER,
           G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
+  g_object_class_install_property (gobject_class, PROP_PCM_MULTICHANNEL,
+      g_param_spec_boolean ("pcm-multichannel", "PCM multichannel",
+          "Experimental C5 native DTS/TrueHD 5.1 and 7.1 PCM routing",
+          FALSE, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS |
+          GST_PARAM_MUTABLE_READY));
+
   gst_element_class_add_static_pad_template (element_class, &sink_template);
   gst_element_class_add_static_pad_template (element_class, &src_template);
 
@@ -633,6 +710,10 @@ gst_adecswitch_init (GstAdecSwitch * self)
   GstPadTemplate *tmpl;
 
   g_mutex_init (&self->lock);
+  g_mutex_init (&self->pcm_lock);
+  self->pcm_multichannel = g_file_test (
+      "/var/lib/webosbrew/dts25/pcm-multichannel", G_FILE_TEST_EXISTS);
+  self->pcm_watch = NULL;
   g_cond_init (&self->cond);
   self->grace_ms = DEFAULT_HW_TEARDOWN_GRACE_MS;
   self->post_changing_decoder = DEFAULT_POST_CHANGING_DECODER;
@@ -654,6 +735,8 @@ gst_adecswitch_init (GstAdecSwitch * self)
   gst_object_unref (tmpl);
   gst_pad_add_probe (self->srcpad, GST_PAD_PROBE_TYPE_EVENT_UPSTREAM,
       gst_adecswitch_src_event_probe, self, NULL);
+  gst_pad_add_probe (self->srcpad, GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM,
+      gst_adecswitch_pcm_caps_probe, self, NULL);
   gst_element_add_pad (GST_ELEMENT_CAST (self), self->srcpad);
 }
 

@@ -33,7 +33,7 @@ jobs:
           OUT: ${{ runner.temp }}/pcm51-decoder
         run: |
           git rev-parse HEAD > "$OUT/source-commit.txt"
-          sha256sum "$OUT/libgstdtsdec.so" > "$OUT/SHA256SUMS"
+          (cd "$OUT" && sha256sum libgstdtsdec.so libgstadecswitch.so > SHA256SUMS)
       - uses: actions/upload-artifact@v4
         with:
           name: pcm51-decoder-armel
