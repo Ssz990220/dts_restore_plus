@@ -202,7 +202,21 @@ def stop_existing():
         return
 
 
+def close_inherited_fds():
+    # nohup redirects stdio but can retain the launching JS service's LS2
+    # sockets. Keeping those alive prevents Homebrew from reconnecting after
+    # its own process exits. Discard borrowed handles before creating ours.
+    for entry in Path('/proc/self/fd').iterdir():
+        fd = int(entry.name)
+        if fd > 2:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
 def watch():
+    close_inherited_fds()
     RUN.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chmod(RUN, 0o700)
     with (RUN / 'watcher.pid').open('a+') as lock:

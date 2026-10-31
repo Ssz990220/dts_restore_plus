@@ -1,6 +1,10 @@
 import copy
 import importlib.util
 from pathlib import Path
+import json
+import socket
+import subprocess
+import sys
 import unittest
 from unittest.mock import patch
 
@@ -78,6 +82,29 @@ class PolicyTests(unittest.TestCase):
             session.restore()
             ott.assert_called_once_with(previous, 'moonfin')
             control.assert_not_called()
+
+    @unittest.skipUnless(sys.platform == 'linux', 'TV /proc descriptor semantics')
+    def test_borrowed_service_socket_closed_before_daemon_work(self):
+        left, right = socket.socketpair()
+        try:
+            code = '''import importlib.util,os,json,errno
+spec=importlib.util.spec_from_file_location('policy',SOURCE)
+p=importlib.util.module_from_spec(spec);spec.loader.exec_module(p)
+p.close_inherited_fds()
+closed=False
+try:os.fstat(FD)
+except OSError as e:closed=e.errno==errno.EBADF
+os.fstat(1)
+print(json.dumps({'borrowed_socket_closed':closed,'stdout_available':True}))
+'''.replace('SOURCE', repr(str(source))).replace('FD', str(right.fileno()))
+            result = subprocess.run([sys.executable, '-c', code],
+                                    pass_fds=(right.fileno(),), check=True,
+                                    stdout=subprocess.PIPE, text=True)
+            self.assertEqual(json.loads(result.stdout),
+                             dict(borrowed_socket_closed=True, stdout_available=True))
+        finally:
+            left.close()
+            right.close()
 
 
 if __name__ == '__main__':
