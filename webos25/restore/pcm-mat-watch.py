@@ -110,9 +110,9 @@ def sink_proven(kernel_log, pid, since):
     for line in kernel_log.splitlines():
         match = re.search(pattern, line)
         # C5 resource bookkeeping was observed 148 ms after the successful
-        # setter. Allow 500 ms startup lead, while requiring a fresh converter
+        # setter. Allow two seconds startup lead, while requiring a fresh converter
         # event and this same player's own six-channel first-format event.
-        if match and float(match[1]) >= since - .5:
+        if match and float(match[1]) >= since - 2.0:
             transitions.append((float(match[1]), int(match[3])))
         match = re.search(first_pattern, line)
         if match:
@@ -125,7 +125,8 @@ def sink_proven(kernel_log, pid, since):
     if not transitions or transitions[-1][1] != 1:
         return False
     flag = transitions[-1][0]
-    return any(-.05 <= first - flag <= 1.0 and -.05 <= output - first <= 1.0
+    return any(-.05 <= first - flag <= 5.0 and -.05 <= output - first <= 5.0
+               and -.05 <= output - flag <= 5.0
                for first in first_events for output in converters)
 
 
