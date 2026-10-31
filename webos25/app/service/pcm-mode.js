@@ -10,6 +10,7 @@ function steps(on, p) {
     lines.push("command -v python3 >/dev/null || { echo 'FAIL: Python 3 is required'; exit 1; }");
     lines.push('python3 "' + p.payload + '/pcm-mat-watch.py" --check-idle');
     lines.push("GST_REGISTRY_UPDATE=no GST_REGISTRY_1_0=/mnt/flash/data/gst_1_0_registry.arm.bin GST_REGISTRY_FORK=no gst-inspect-1.0 dtsdec | grep -q '^  pcm-multichannel' || { echo 'FAIL: Press Enable first to install this decoder'; exit 1; }");
+    lines.push('[ ! -f "' + helper + '" ] || python3 "' + helper + '" --stop');
     lines.push('cp -f "' + p.payload + '/pcm-mat-watch.py" "' + helper + '"');
     lines.push('rm -f "' + p.dest + '/passthrough"');
     lines.push('W25_PT=stop sh "' + p.init + '"');

@@ -166,6 +166,15 @@ def interrupted(*_):
     stopping = True
 
 
+def owner_present():
+    app = 'io.github.josippapez.dtsenabler'
+    return ((ROOT / '.cli-install').exists() or any(
+        (Path(base) / app).is_dir() for base in [
+            '/media/developer/apps/usr/palm/applications',
+            '/media/cryptofs/apps/usr/palm/applications',
+            '/usr/palm/applications']))
+
+
 def stop_existing():
     try:
         pid = int((RUN / 'watcher.pid').read_text())
@@ -198,7 +207,7 @@ def watch():
             signal.signal(sig, interrupted)
         session = None
         try:
-            while MARKER.exists() and not stopping:
+            while MARKER.exists() and owner_present() and not stopping:
                 try:
                     stream = None
                     app = foreground()
