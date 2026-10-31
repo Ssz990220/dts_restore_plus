@@ -102,20 +102,31 @@ def sink_proven(kernel_log, pid, since):
     # native converter's eight-slot multichannel output (acmod 7). Setting the
     # flag after the first caps event can leave the converter in stereo; that
     # is not evidence for switching the eARC carrier to MAT.
-    pattern = (r'^\[\s*([0-9]+\.[0-9]+)\].*\(0*' + str(pid)
-               + r':\d+\).*lgao_set_pcm_multi_channel.*changing\s+0\s*->\s*1')
-    transitions, converters = [], []
+    own = r'^\[\s*([0-9]+\.[0-9]+)\].*\(0*' + str(pid) + r':\d+\).*'
+    pattern = own + r'lgao_set_pcm_multi_channel.*changing\s+([01])\s*->\s*([01])'
+    first_pattern = (own + r'lgao_push_first_event.*channels=\(int\)6\D'
+                     r'.*rate=\(int\)48000\D.*acmod=\(int\)7(?:\D|$)')
+    transitions, first_events, converters = [], [], []
     for line in kernel_log.splitlines():
         match = re.search(pattern, line)
-        if match and float(match[1]) >= since - .1:
-            transitions.append(float(match[1]))
+        # C5 resource bookkeeping was observed 148 ms after the successful
+        # setter. Allow 500 ms startup lead, while requiring a fresh converter
+        # event and this same player's own six-channel first-format event.
+        if match and float(match[1]) >= since - .5:
+            transitions.append((float(match[1]), int(match[3])))
+        match = re.search(first_pattern, line)
+        if match:
+            first_events.append(float(match[1]))
         if 'Pcmcvt_Event.1332' in line:
-            match = re.search(r'^\[\s*([0-9.]+)\].*channels=\(int\)8'
+            match = re.search(r'^\[\s*([0-9.]+)\].*channels=\(int\)8\D'
                               r'.*acmod=\(int\)7(?:\D|$)', line)
-            if match:
+            if match and float(match[1]) >= since - .1:
                 converters.append(float(match[1]))
-    return any(-.05 <= output - flag <= 1.0
-               for flag in transitions for output in converters)
+    if not transitions or transitions[-1][1] != 1:
+        return False
+    flag = transitions[-1][0]
+    return any(-.05 <= first - flag <= 1.0 and -.05 <= output - first <= 1.0
+               for first in first_events for output in converters)
 
 
 def find_candidate(app):

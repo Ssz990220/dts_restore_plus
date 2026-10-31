@@ -43,12 +43,21 @@ class PolicyTests(unittest.TestCase):
 
     def test_sink_proof_must_match_pid_and_current_pipeline(self):
         flag = '[ 100.123] lgao NOT (00123:00567) lgao_set_pcm_multi_channel changing 0 -> 1'
+        first = ('[ 100.125] lgao NOT (00123:00567) lgao_push_first_event '
+                 'channels=(int)6, bits-per-sample=(int)32, rate=(int)48000, acmod=(int)7')
         converter = ('[ 100.130] Pcmcvt_Event.1332 channels=(int)8, '
                      'bits-per-sample=(int)32, acmod=(int)7')
-        log = flag + '\n' + converter
+        log = '\n'.join([flag, first, converter])
         self.assertTrue(p.sink_proven(log, 123, 100))
         self.assertFalse(p.sink_proven(flag, 123, 100))
         self.assertFalse(p.sink_proven(converter, 123, 100))
+        self.assertFalse(p.sink_proven(flag + '\n' + converter, 123, 100))
+        self.assertFalse(p.sink_proven(log.replace('(int)6,', '(int)2,'), 123, 100))
+        self.assertFalse(p.sink_proven(log.replace('100.125', '90.125'), 123, 100))
+        self.assertTrue(p.sink_proven(log.replace('100.123', '99.852'), 123, 100))
+        self.assertFalse(p.sink_proven(log.replace('100.123', '99.4'), 123, 100))
+        cleared = '\n[ 100.2] lgao NOT (00123:00567) lgao_set_pcm_multi_channel changing 1 -> 0'
+        self.assertFalse(p.sink_proven(log + cleared, 123, 100))
         self.assertFalse(p.sink_proven(log.replace('channels=(int)8', 'channels=(int)2'), 123, 100))
         self.assertFalse(p.sink_proven(log.replace('acmod=(int)7', 'acmod=(int)2'), 123, 100))
         self.assertFalse(p.sink_proven(log.replace('100.130', '90.130'), 123, 100))

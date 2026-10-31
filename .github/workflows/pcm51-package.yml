@@ -9,7 +9,7 @@ on:
       tag:
         description: Fixed experimental release tag
         required: true
-        default: pcm51-test-2.7.50
+        default: pcm51-test-2.7.51
 
 permissions:
   contents: write
@@ -84,7 +84,7 @@ jobs:
       - name: Publish explicitly experimental release
         run: |
           gh release create "$RELEASE_TAG" --target "$GITHUB_SHA" --prerelease \
-            --title 'DTS Enabler PCM 5.1 — C5 test 2.7.50' \
+            --title 'DTS Enabler PCM 5.1 — C5 test 2.7.51' \
             --notes-file webos25/app/PCM-TEST-NOTICE.txt \
             webos25/app/dist/*.ipk webos25/app/dist/*.manifest.json webos25/app/dist/build-provenance.json
       - uses: actions/setup-python@v5
