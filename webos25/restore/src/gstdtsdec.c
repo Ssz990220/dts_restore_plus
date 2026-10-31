@@ -978,7 +978,8 @@ gst_dtsdec_init (GstDtsDec * dtsdec)
 {
   DtsDrcConfig cfg;
 
-  dtsdec->pcm_multichannel = FALSE;
+  dtsdec->pcm_multichannel = g_file_test (
+      "/var/lib/webosbrew/dts25/pcm-multichannel", G_FILE_TEST_EXISTS);
   dtsdec->pcm_target = NULL;
   dtsdec->dynamic_range_compression = FALSE;
 

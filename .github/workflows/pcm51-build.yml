@@ -1,0 +1,43 @@
+name: Build experimental PCM 5.1 decoder
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'webos25/restore/src/**'
+      - 'webos25/restore/build.sh'
+      - '.github/workflows/pcm51-build.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  decoder:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test decoder math and PCM routing graph
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libgstreamer1.0-dev gstreamer1.0-tools ffmpeg
+          sh webos25/restore/src/test/run-tests.sh
+          sh webos25/restore/src/test/run-pcm-route-tests.sh
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+      - name: Build C5 ARM soft-float decoder from this source
+        env:
+          OUT: ${{ runner.temp }}/pcm51-decoder
+        run: bash webos25/restore/build.sh
+      - name: Record source and binary identities
+        env:
+          OUT: ${{ runner.temp }}/pcm51-decoder
+        run: |
+          git rev-parse HEAD > "$OUT/source-commit.txt"
+          sha256sum "$OUT/libgstdtsdec.so" > "$OUT/SHA256SUMS"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pcm51-decoder-armel
+          path: ${{ runner.temp }}/pcm51-decoder/
+          retention-days: 14
