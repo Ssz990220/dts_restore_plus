@@ -9,7 +9,7 @@ on:
       tag:
         description: Fixed experimental release tag
         required: true
-        default: pcm51-test-2.7.53
+        default: pcm51-test-2.7.54
       publish:
         description: Publish after on-device validation and committing both binaries
         type: boolean

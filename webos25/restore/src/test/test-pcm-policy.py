@@ -94,6 +94,60 @@ class PolicyTests(unittest.TestCase):
             self.assertEqual(current, original)
             ott.assert_not_called()
 
+    def test_pcm71_proof_survives_seek_pause_and_log_rotation(self):
+        row = dict(self.row, currentAppId='org.moonfin.webos')
+        state = copy.deepcopy(self.state)
+        track = state['sourceInfo']['programInfo'][0]['audioTrackInfo'][0]
+        track.update(codec='true-hd', channels=8)
+        stream = p.candidate(row, state, 'org.moonfin.webos')
+        first = ('[ 100.2] lgao (00123:00567) lgao_push_first_event '
+                 'channels=(int)8, rate=(int)48000, acmod=(int)21')
+        conv = '[ 100.4] Pcmcvt_Event.1332 channels=(int)8, acmod=(int)21'
+        log = first + '\n' + conv
+        proof = p.Pcm71Proof()
+        proof.observe(row, state)
+        self.assertTrue(proof.accept(stream, log))
+        # Real C5 trace: same media/PID/track, timestamp advances after seek;
+        # first-format still refers to the original decoder startup.
+        row['timestamp'] = 470000000000
+        state['media_state'] = 'pause'
+        proof.observe(row, state)
+        self.assertTrue(proof.valid)
+        state['media_state'] = 'play'
+        resumed = p.candidate(row, state, 'org.moonfin.webos')
+        proof.observe(row, state)
+        self.assertFalse(p.sink_proven71(log, 123, resumed['since']))
+        self.assertTrue(proof.accept(resumed, log))
+        self.assertTrue(proof.accept(resumed, ''))
+        bad = first.replace('100.2', '471.2').replace('(int)21', '(int)7')
+        self.assertFalse(proof.accept(resumed, log + '\n' + bad))
+
+    def test_pcm71_proof_cannot_transfer_to_new_movie_or_track(self):
+        row = dict(self.row, currentAppId='org.moonfin.webos')
+        state = copy.deepcopy(self.state)
+        state['sourceInfo']['programInfo'][0]['audioTrackInfo'][0].update(codec='true-hd', channels=8)
+        log = ('[ 100.2] lgao (00123:00567) lgao_push_first_event '
+               'channels=(int)8, rate=(int)48000, acmod=(int)21\n'
+               '[ 100.4] Pcmcvt_Event.1332 channels=(int)8, acmod=(int)21')
+        proof = p.Pcm71Proof()
+        proof.observe(row, state)
+        stream = p.candidate(row, state, 'org.moonfin.webos')
+        self.assertTrue(proof.accept(stream, log))
+        other = dict(row, id='another-media-id', timestamp=470000000000)
+        proof.observe(other, state)
+        self.assertFalse(proof.accept(p.candidate(other, state, 'org.moonfin.webos'), log))
+        # Switching to an unsupported track and back must also clear proof.
+        proof.observe(row, state)
+        self.assertTrue(proof.accept(stream, log))
+        state['sourceInfo']['programInfo'][0]['audioTrackInfo'].append(dict(codec='ac3', channels=6, sampleRate=48))
+        state['audioInfo']['track'] = 1
+        proof.observe(row, state)
+        self.assertFalse(proof.valid)
+        state['audioInfo']['track'] = 0
+        row['timestamp'] = 470000000000
+        proof.observe(row, state)
+        self.assertFalse(proof.accept(p.candidate(row, state, 'org.moonfin.webos'), log))
+
     def test_sink_proof_must_match_pid_and_current_pipeline(self):
         flag = '[ 100.123] lgao NOT (00123:00567) lgao_set_pcm_multi_channel changing 0 -> 1'
         first = ('[ 100.125] lgao NOT (00123:00567) lgao_push_first_event '

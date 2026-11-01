@@ -107,6 +107,7 @@ def candidate(row, state, app):
     if not isinstance(pid, int) or not isinstance(timestamp, (int, float)):
         return None
     return {'key': (row['id'], pid, index), 'pid': pid, 'channels': channels,
+            'codec': codec, 'rate': 48000,
             'since': timestamp / 1000000000.0, 'app': app}
 
 
@@ -145,7 +146,7 @@ def sink_proven(kernel_log, pid, since, channels=6):
                for first in first_events for output in converters)
 
 
-def sink_proven71(kernel_log, pid, since):
+def pcm71_evidence(kernel_log, pid, since):
     # Require the current owner's most recent primary format, not just an
     # eight-slot transport or an earlier 7.1 track on the same process.
     primary, converter = None, None
@@ -165,22 +166,77 @@ def sink_proven71(kernel_log, pid, since):
             primary = (t, fields)
         if 'Pcmcvt_Event' in line and 'channels' in fields:
             converter = (t, fields)
-    return bool(primary and converter
+    return primary, converter
+
+
+def pcm71_primary_valid(primary):
+    return bool(primary
                 and primary[1].get('channels') == 8
                 and primary[1].get('acmod') == 21
-                and primary[1].get('rate') == 48000
+                and primary[1].get('rate') == 48000)
+
+
+def sink_proven71(kernel_log, pid, since):
+    primary, converter = pcm71_evidence(kernel_log, pid, since)
+    return bool(pcm71_primary_valid(primary) and converter
                 and converter[1].get('channels') == 8
                 and converter[1].get('acmod') == 21
                 and -.05 <= converter[0] - primary[0] <= 5)
 
 
-def find_candidate(app):
+class Pcm71Proof:
+    """Keep format proof for a decoder identity, not its mutable uMS timestamp.
+
+    C5 updates row.timestamp on seek/pause without changing the decoder or
+    resending first-format. Retain proof across those transitions and kernel
+    ring-buffer rotation. A different media ID, PID, track, codec or channel
+    count clears it; a subsequent own primary format can revoke it.
+    """
+    def __init__(self):
+        self.identity = None
+        self.since = None
+        self.valid = False
+
+    def _select(self, key, codec, channels, rate, since):
+        identity = (key, codec, channels, 48000 if rate in (48, 48000) else rate)
+        if identity != self.identity:
+            self.identity, self.since, self.valid = identity, since, False
+
+    def observe(self, row, state):
+        programs = state.get('sourceInfo', {}).get('programInfo', [])
+        tracks = programs[0].get('audioTrackInfo', []) if programs else []
+        index = state.get('audioInfo', {}).get('track', 0)
+        if not isinstance(index, int) or not 0 <= index < len(tracks):
+            self.identity, self.valid = None, False
+            return
+        track = tracks[index]
+        self._select((row.get('id'), row.get('pid'), index),
+                     str(track.get('codec', '')).lower(), track.get('channels'),
+                     track.get('sampleRate'), row.get('timestamp', 0) / 1e9)
+        if state.get('media_state') not in ('play', 'pause'):
+            self.valid = False
+
+    def accept(self, stream, kernel_log):
+        self._select(stream['key'], stream['codec'], stream['channels'],
+                     stream['rate'], stream['since'])
+        primary, _ = pcm71_evidence(kernel_log, stream['pid'], self.since)
+        if primary and not pcm71_primary_valid(primary):
+            self.valid = False
+        elif not self.valid:
+            self.valid = sink_proven71(kernel_log, stream['pid'], self.since)
+        return self.valid
+
+
+def find_candidate(app, proof=None):
     rows = luna('luna://com.webos.media/getActivePipelines', {})
     for row in rows:
         if row.get('type') != 'media' or row.get('currentAppId') != app:
             continue
         response = luna('luna://com.webos.media/getPipelineState', {'mediaId': row['id']})
-        result = candidate(row, json.loads(response['data']), app)
+        state = json.loads(response['data'])
+        if proof is not None:
+            proof.observe(row, state)
+        result = candidate(row, state, app)
         if result:
             return result
     return None
@@ -291,18 +347,19 @@ def watch():
         for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
             signal.signal(sig, interrupted)
         session = None
+        proof71 = Pcm71Proof()
         try:
             while MARKER.exists() and owner_present() and not stopping:
                 try:
                     stream = None
                     app = foreground()
                     if not (ROOT / 'passthrough').exists():
-                        stream = find_candidate(app)
+                        stream = find_candidate(app, proof71)
                     if stream and not eligible(settings(), quality('external_arc'), stream['channels']):
                         stream = None
                     if stream and stream['channels'] == 8:
                         kernel = subprocess.check_output(['dmesg'], text=True, timeout=4)
-                        if not sink_proven(kernel, stream['pid'], stream['since'], 8):
+                        if not proof71.accept(stream, kernel):
                             stream = None
                     if session and (not stream or stream['key'] != session.stream['key']):
                         session.restore()
@@ -310,7 +367,7 @@ def watch():
                     if stream and session is None:
                         kernel = subprocess.check_output(['dmesg'], text=True, timeout=4)
                         if (eligible(settings(), quality('external_arc'), stream['channels'])
-                                and sink_proven(kernel, stream['pid'], stream['since'], stream['channels'])):
+                                and (stream['channels'] == 8 or sink_proven(kernel, stream['pid'], stream['since']))):
                             session = Session(stream)
                             session.apply()
                     if session:

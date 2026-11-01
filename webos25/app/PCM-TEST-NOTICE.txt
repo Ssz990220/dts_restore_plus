@@ -1,4 +1,4 @@
-DTS Enabler PCM multichannel — experimental LG C5 test build 2.7.53
+DTS Enabler PCM multichannel — experimental LG C5 test build 2.7.54
 
 Fork: https://github.com/Ssz990220/dts_restore_plus
 Original credits and licenses are retained.
@@ -10,7 +10,9 @@ LG switch that was observed to collapse the layout to 5.1. Only after
 native 8-channel/acmod21 sink and converter proof can the controller request
 plain LPCM 7.1. Opus 7.1 in Moonfin uses the same guarded output request.
 
-This candidate is NOT yet validated on the TV. The previous temporary Opus
+The 2.7.53 TrueHD path reached Sonos PCM 7.1 on the TV. This 2.7.54 candidate
+fixes proof retention across C5 seek/pause timestamp changes; that lifecycle
+fix still needs TV validation. The previous temporary Opus
 probe reached Sonos PCM 7.1, with provisional listening confirmation; that
 does not validate this new TrueHD/DTS code or every physical speaker position.
 E-AC3/DDP 7.1 hardware decoding remains outside the new routing policy.
@@ -23,7 +25,7 @@ Test all eight positions, including center/LFE and side versus rear surrounds.
 A receiver badge alone is insufficient. Do not compensate Mac channel mapping
 in this build; this candidate targets TV-internal Moonfin playback only.
 
-Keep the previous 2.7.52 test IPK for rollback. Stop playback, disable the
+Keep the previous 2.7.53 test IPK for rollback. Stop playback, disable the
 PCM test, reinstall the previous package and press Enable to restore its
 payload. Do not run two route controllers concurrently.
 
