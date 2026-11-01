@@ -9,7 +9,7 @@ on:
       tag:
         description: Fixed experimental release tag
         required: true
-        default: pcm51-test-2.7.52
+        default: pcm51-test-2.7.53
       publish:
         description: Publish after on-device validation and committing both binaries
         type: boolean
@@ -57,7 +57,7 @@ jobs:
           gh run download "$DECODER_RUN" -n pcm51-decoder-armel -D /tmp/decoder
           SOURCE=$(cat /tmp/decoder/source-commit.txt)
           test "$SOURCE" = "$(gh run view "$DECODER_RUN" --json headSha --jq .headSha)"
-          git diff --exit-code "$SOURCE" HEAD -- webos25/restore/src/gstdtsdec.c webos25/restore/src/gstdtsdec.h webos25/restore/src/gstadecswitch.c webos25/restore/src/gstadecswitch.h webos25/restore/src/gstwebospcm.h webos25/restore/src/gstwebospcmwatch.h webos25/restore/build.sh
+          git diff --exit-code "$SOURCE" HEAD -- webos25/restore/src/gstdtsdec.c webos25/restore/src/gstdtsdec.h webos25/restore/src/gstadecswitch.c webos25/restore/src/gstadecswitch.h webos25/restore/src/gstwebospcm.h webos25/restore/src/gstwebospcmwatch.h webos25/restore/src/gstwebospcm71.h webos25/restore/pcm-mat-watch.py webos25/restore/build.sh
           (cd /tmp/decoder && sha256sum --check SHA256SUMS)
           if [ '${{ inputs.publish }}' = true ]; then
             cmp /tmp/decoder/libgstdtsdec.so webos25/restore/out/libgstdtsdec.so

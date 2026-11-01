@@ -15,7 +15,7 @@ ipks = list((root / 'dist').glob('*.ipk'))
 assert len(ipks) == 1
 ipk = ipks[0]
 manifest = {key: app[key] for key in ['id', 'version', 'type', 'title']}
-manifest.update(appDescription='Experimental rooted C5 DTS decode to PCM 5.1 route. Requires listening validation; not verified for 7.1.',
+manifest.update(appDescription='Experimental rooted C5 DTS PCM 5.1 and Moonfin PCM 7.1 candidate. Full physical channel validation required.',
                 iconUri=f'https://raw.githubusercontent.com/{repo}/main/assets/icon160.png',
                 sourceUrl=f'https://github.com/{repo}', rootRequired=True,
                 ipkUrl=ipk.name, ipkSize=ipk.stat().st_size,
@@ -26,5 +26,6 @@ provenance = dict(repository=repo, release=tag,
                   decoder_commit=Path(decoder_commit_file).read_text().strip(),
                   decoder_sha256=hashlib.sha256(Path('webos25/restore/out/libgstdtsdec.so').read_bytes()).hexdigest(),
                   switch_sha256=hashlib.sha256(Path('webos25/restore/switch-out/libgstadecswitch.so').read_bytes()).hexdigest(),
+                  policy_sha256=hashlib.sha256(Path('webos25/restore/pcm-mat-watch.py').read_bytes()).hexdigest(),
                   ipk_sha256=manifest['ipkHash']['sha256'], status='experimental: physical channel test required')
 (root / 'dist/build-provenance.json').write_text(json.dumps(provenance, indent=2) + '\n')

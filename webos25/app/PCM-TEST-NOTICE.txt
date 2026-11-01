@@ -1,24 +1,30 @@
-DTS Enabler PCM 5.1 — experimental LG C5 test build
+DTS Enabler PCM multichannel — experimental LG C5 test build 2.7.53
 
 Fork: https://github.com/Ssz990220/dts_restore_plus
-Based on josippapez/dts_restore_plus; original credits and licenses are retained.
+Original credits and licenses are retained.
 
-This is a test release, not a claim that DTS-to-PCM 5.1 is fixed on the TV.
-It adds an opt-in decoded PCM 5.1 sink path and a separately guarded MAT policy.
-Only six-channel, 48 kHz DTS on the webOS 25 C5 path is targeted. No 7.1 validation.
+This candidate preserves the prior DTS 5.1 MAT path and adds a separate
+Moonfin PCM 7.1 route. TrueHD/MLP/DTS software-decoded, positioned 8-channel
+48 kHz PCM receives explicit native layout metadata without enabling the
+LG switch that was observed to collapse the layout to 5.1. Only after
+native 8-channel/acmod21 sink and converter proof can the controller request
+plain LPCM 7.1. Opus 7.1 in Moonfin uses the same guarded output request.
 
-The application ID is the original DTS Enabler ID. Installing this package
-replaces that app, preserving its existing configuration; it does not create
-a second independently active DTS installation. The decoder payload must then
-be applied with Enable, with playback stopped. PCM test mode starts OFF unless
-you explicitly enabled it before. Restart the video after turning the mode on.
+This candidate is NOT yet validated on the TV. The previous temporary Opus
+probe reached Sonos PCM 7.1, with provisional listening confirmation; that
+does not validate this new TrueHD/DTS code or every physical speaker position.
+E-AC3/DDP 7.1 hardware decoding remains outside the new routing policy.
+No movie audio is converted to Opus by this patch.
 
-Requires root, Homebrew Channel, an eARC/MAT receiver, eARC On and Digital Sound
-Out Auto. Enabling PCM mode turns DTS bitstream passthrough off. A receiver's
-5.1 badge alone is insufficient: check rear-left, rear-right and LFE tones.
+Installing replaces the existing DTS Enabler app ID. Applying its payload
+requires stopping playback and pressing Enable. Keep eARC On, Digital Sound
+Out Auto, and the opt-in multichannel PCM test enabled. Restart the video.
+Test all eight positions, including center/LFE and side versus rear surrounds.
+A receiver badge alone is insufficient. Do not compensate Mac channel mapping
+in this build; this candidate targets TV-internal Moonfin playback only.
 
-Rollback: turn PCM mode off, stop playback, install the original upstream
-2.7.46 app and press Enable to restore its payload. Keep the original IPK.
-Disable/Uninstall also stop this fork's PCM watcher before reverting overrides.
+Keep the previous 2.7.52 test IPK for rollback. Stop playback, disable the
+PCM test, reinstall the previous package and press Enable to restore its
+payload. Do not run two route controllers concurrently.
 
-No server credentials, tokens or stream URLs are included in the package.
+No credentials, user movie samples or authenticated stream URLs are included.

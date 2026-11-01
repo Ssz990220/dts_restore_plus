@@ -272,7 +272,8 @@
     $("btnPcmOff").disabled = !canW25Test || s.pcmMultichannelRequested !== true;
     setVal("sPcmMode", !s.pcmMultichannelRequested ? "off"
       : s.pcmMultichannelPhase === "mat-requested" ? "MAT requested — verify speaker placement"
-      : s.pcmMultichannelPhase === "waiting" ? "on — waiting for eligible DTS 5.1 playback"
+      : s.pcmMultichannelPhase === "lpcm-requested" ? "LPCM 7.1 requested — verify every speaker"
+      : s.pcmMultichannelPhase === "waiting" ? "on — waiting for eligible multichannel playback"
       : "on — " + (s.pcmMultichannelPhase || "waiting"), s.pcmMultichannelRequested ? "warn" : null);
     // DTS passthrough: also webOS 25 only, since it lives in the webOS 25 dtsdec.
     $("cardPassthrough").hidden = !canW25Test;

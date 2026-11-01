@@ -37,7 +37,7 @@ function register(service, h) {
       return h.exec(steps(want, h.paths));
     }).then(function () {
       message.respond({returnValue: true, enabled: want,
-        summary: want ? "Experimental PCM 5.1 enabled. Restart the video. Requires eARC and Digital Sound Out Auto."
+        summary: want ? "Experimental multichannel PCM enabled. Restart the video. Requires eARC and Digital Sound Out Auto."
           : "PCM mode off; the normal TV sound policy is restored."});
     }).catch(function (e) {
       message.respond({returnValue: false, errorText: e.errorText || e.message || "PCM mode failed"});
