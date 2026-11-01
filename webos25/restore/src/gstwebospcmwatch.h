@@ -4,6 +4,7 @@
 #ifndef GST_WEBOS_PCM_WATCH_H
 #define GST_WEBOS_PCM_WATCH_H
 #include "gstwebospcm.h"
+#include "gstwebospcm71.h"
 #ifdef __linux__
 #include <syslog.h>
 #include <unistd.h>
@@ -19,6 +20,7 @@ typedef struct _DtsPcmWatch {
   gint resolved;
   GMutex lock;
   gboolean active;
+  gboolean multichannel;
   guint attempts;
   GWeakRef decoder;
   GWeakRef root;
@@ -65,7 +67,8 @@ dts_pcm_watch_try (DtsPcmWatch * watch, const gchar *stage)
     GString *trace = g_string_new ("");
     decoder = g_weak_ref_get (&watch->decoder);
     if (decoder != NULL)
-      enabled = dts_pcm_target_enable_full (decoder, &watch->target, trace);
+      enabled = dts_pcm_target_configure_full (decoder, &watch->target, trace,
+          watch->multichannel);
     if (enabled)
       g_atomic_int_set (&watch->resolved, 1);
 #ifdef __linux__
@@ -92,11 +95,38 @@ dts_pcm_watch_try (DtsPcmWatch * watch, const gchar *stage)
 static GstPadProbeReturn
 dts_pcm_watch_probe (GstPad * pad, GstPadProbeInfo * info, gpointer data)
 {
-  (void) pad;
+  DtsPcmWatch *watch = data;
   dts_pcm_watch_try (data, (GST_PAD_PROBE_INFO_TYPE (info) &
           GST_PAD_PROBE_TYPE_BUFFER) ? "sink-buffer" :
       (GST_PAD_PROBE_INFO_TYPE (info) & GST_PAD_PROBE_TYPE_QUERY_DOWNSTREAM) ?
       "sink-query" : "sink-event");
+  if (GST_PAD_PROBE_INFO_TYPE (info) & GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM) {
+    GstEvent *event = GST_PAD_PROBE_INFO_EVENT (info);
+    if (GST_EVENT_TYPE (event) == GST_EVENT_CAPS) {
+      GstElement *parent = gst_pad_get_parent_element (pad), *target = NULL;
+      gboolean own = FALSE;
+      g_mutex_lock (&watch->lock);
+      if (watch->active && !watch->multichannel && watch->target != NULL) {
+        target = g_weak_ref_get (&watch->target->sink);
+        own = target == parent;
+      }
+      g_mutex_unlock (&watch->lock);
+      if (target != NULL) gst_object_unref (target);
+      if (parent != NULL) gst_object_unref (parent);
+      if (own) {
+        GstCaps *caps, *replacement;
+        gst_event_parse_caps (event, &caps);
+        replacement = dts_pcm71_caps (caps);
+        if (replacement != NULL) {
+          GstEvent *next = gst_event_new_caps (replacement);
+          gst_event_set_seqnum (next, gst_event_get_seqnum (event));
+          GST_PAD_PROBE_INFO_DATA (info) = next;
+          gst_event_unref (event);
+          gst_caps_unref (replacement);
+        }
+      }
+    }
+  }
   return GST_PAD_PROBE_OK;
 }
 
@@ -145,12 +175,13 @@ dts_pcm_watch_added (GstBin * root, GstBin * parent, GstElement * element,
 }
 
 static DtsPcmWatch *
-dts_pcm_watch_new (GstElement * decoder)
+dts_pcm_watch_new_full (GstElement * decoder, gboolean multichannel)
 {
   DtsPcmWatch *watch = g_new0 (DtsPcmWatch, 1);
   GstObject *root = gst_object_ref (decoder), *parent;
   watch->refs = 1;
   watch->active = TRUE;
+  watch->multichannel = multichannel;
   g_mutex_init (&watch->lock);
   g_weak_ref_init (&watch->decoder, decoder);
   watch->probes = g_ptr_array_new ();
@@ -185,6 +216,12 @@ dts_pcm_watch_new (GstElement * decoder)
   gst_object_unref (root);
   dts_pcm_watch_try (watch, "renegotiate");
   return watch;
+}
+
+static inline DtsPcmWatch *
+dts_pcm_watch_new (GstElement * decoder)
+{
+  return dts_pcm_watch_new_full (decoder, TRUE);
 }
 
 static void

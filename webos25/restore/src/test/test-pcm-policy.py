@@ -41,6 +41,59 @@ class PolicyTests(unittest.TestCase):
         self.state['media_state'] = 'pause'
         self.assertIsNone(p.candidate(self.row, self.state, 'moonfin'))
 
+    def test_pcm71_requires_moonfin_supported_codec_and_eight_channel_receiver(self):
+        self.row['currentAppId'] = 'org.moonfin.webos'
+        t = self.state['sourceInfo']['programInfo'][0]['audioTrackInfo'][0]
+        t.update(codec='true-hd', channels=8)
+        self.assertEqual(p.candidate(self.row, self.state, 'org.moonfin.webos')['channels'], 8)
+        t['codec'] = 'eac3'
+        self.assertIsNone(p.candidate(self.row, self.state, 'org.moonfin.webos'))
+        t['codec'] = 'true-hd'
+        self.row['currentAppId'] = 'other-app'
+        self.assertIsNone(p.candidate(self.row, self.state, 'other-app'))
+        sound = dict(soundOutput='external_arc', soundOutputDigital='auto', eArcSupport='on')
+        receiver = dict(arcActivation='eARC', advancedEarcCapability=[dict(
+            audioCodingType='PCM', maxChannelNumber=8)])
+        self.assertTrue(p.eligible(sound, receiver, 8))
+        receiver['advancedEarcCapability'][0]['maxChannelNumber'] = 6
+        self.assertFalse(p.eligible(sound, receiver, 8))
+
+    def test_pcm71_current_primary_layout_and_converter_proof(self):
+        first = ('[ 100.2] lgao (00123:00567) lgao_push_first_event Event : '
+                 'channels=(int)8, bits-per-sample=(int)32, rate=(int)48000, acmod=(int)21')
+        bypass = ('[ 100.3] lgao (00123:00567) lgao_push_first_event Event BYPASSS : '
+                  'channels=(int)2, bits-per-sample=(int)16, rate=(int)48000, acmod=(int)21')
+        conv = '[ 100.4] Pcmcvt_Event.1332 channels=(int)8, acmod=(int)21'
+        log = '\n'.join([first, bypass, conv])
+        self.assertTrue(p.sink_proven(log, 123, 100, 8))
+        for invalid in [log.replace('(int)21', '(int)7'),
+                        log.replace('100.4', '110.4'), first + '\n' + bypass,
+                        log + '\n[ 101.0] Pcmcvt_Event.1332 channels=(int)2, acmod=(int)2',
+                        log + '\n' + first.replace('100.2', '101.1').replace('(int)8', '(int)6')]:
+            self.assertFalse(p.sink_proven(invalid, 123, 100, 8))
+        self.assertFalse(p.sink_proven(log, 12, 100, 8))
+        self.assertFalse(p.sink_proven(log, 123, 103, 8))
+
+    def test_pcm71_requests_lpcm_without_ott_changes_and_restores(self):
+        original = [2, 1, 0, 0, 1]
+        current = original[:]
+        def control(value=None):
+            if value is not None:
+                current[:] = value
+            return current[:]
+        with patch.object(p, 'quality', return_value=dict(isOTTEnable=False)), \
+                patch.object(p, 'earc', side_effect=control), \
+                patch.object(p, 'set_ott') as ott, \
+                patch.object(p, 'foreground', return_value='org.moonfin.webos'), \
+                patch.object(p, 'settings', return_value=dict(soundOutput='external_arc',
+                    soundOutputDigital='auto', eArcSupport='on')):
+            session = p.Session(dict(app='org.moonfin.webos', channels=8))
+            session.apply()
+            self.assertEqual(current, p.LPCM71)
+            session.restore()
+            self.assertEqual(current, original)
+            ott.assert_not_called()
+
     def test_sink_proof_must_match_pid_and_current_pipeline(self):
         flag = '[ 100.123] lgao NOT (00123:00567) lgao_set_pcm_multi_channel changing 0 -> 1'
         first = ('[ 100.125] lgao NOT (00123:00567) lgao_push_first_event '

@@ -9,6 +9,9 @@
 
 typedef struct _DtsPcmTarget {
   GWeakRef sink;
+  gboolean original;
+  gboolean requested;
+  gboolean changed;
 } DtsPcmTarget;
 
 static void
@@ -21,10 +24,10 @@ dts_pcm_target_release (DtsPcmTarget ** target)
     return;
   sink = g_weak_ref_get (&(*target)->sink);
   if (sink != NULL) {
-    /* Only false -> true changes are owned by this helper. */
+    /* Restore only the property change still owned by this helper. */
     g_object_get (sink, "pcm-multi-ch", &current, NULL);
-    if (current)
-      g_object_set (sink, "pcm-multi-ch", FALSE, NULL);
+    if ((*target)->changed && current == (*target)->requested)
+      g_object_set (sink, "pcm-multi-ch", (*target)->original, NULL);
     gst_object_unref (sink);
   }
   g_weak_ref_clear (&(*target)->sink);
@@ -112,8 +115,8 @@ dts_pcm_is_lg_sink (GstElement * element)
 /* Called before the first decoded PCM caps/event. With a late/unlinked graph,
  * leave routing unchanged; this prototype does not attempt live rewiring. */
 static gboolean
-dts_pcm_target_enable_full (GstElement * decoder, DtsPcmTarget ** target,
-    GString *trace)
+dts_pcm_target_configure_full (GstElement * decoder, DtsPcmTarget ** target,
+    GString *trace, gboolean requested)
 {
   GstPad *output;
   guint hops;
@@ -183,18 +186,22 @@ dts_pcm_target_enable_full (GstElement * decoder, DtsPcmTarget ** target,
     gst_object_unref (only_input);
     gst_object_unref (peer);
     if (dts_pcm_is_lg_sink (element)) {
-      gboolean enabled = FALSE;
-      g_object_get (element, "pcm-multi-ch", &enabled, NULL);
-      if (!enabled) {
-        g_object_set (element, "pcm-multi-ch", TRUE, NULL);
-        g_object_get (element, "pcm-multi-ch", &enabled, NULL);
-        if (enabled) {
-          *target = g_new0 (DtsPcmTarget, 1);
-          g_weak_ref_init (&(*target)->sink, element);
-        }
+      gboolean current = FALSE, original;
+      g_object_get (element, "pcm-multi-ch", &current, NULL);
+      original = current;
+      if (current != requested) {
+        g_object_set (element, "pcm-multi-ch", requested, NULL);
+        g_object_get (element, "pcm-multi-ch", &current, NULL);
+      }
+      if (current == requested && (current != original || !requested)) {
+        *target = g_new0 (DtsPcmTarget, 1);
+        g_weak_ref_init (&(*target)->sink, element);
+        (*target)->original = original;
+        (*target)->requested = requested;
+        (*target)->changed = current != original;
       }
       gst_object_unref (element);
-      return enabled;
+      return current == requested;
     }
     output = dts_pcm_single_link (element, GST_PAD_SRC);
     if (output == NULL && trace) g_string_append (trace, "/no-single-output");
@@ -203,6 +210,13 @@ dts_pcm_target_enable_full (GstElement * decoder, DtsPcmTarget ** target,
   if (output != NULL)
     gst_object_unref (output);
   return FALSE;
+}
+
+static inline gboolean
+dts_pcm_target_enable_full (GstElement * decoder, DtsPcmTarget ** target,
+    GString *trace)
+{
+  return dts_pcm_target_configure_full (decoder, target, trace, TRUE);
 }
 
 static inline gboolean

@@ -10,7 +10,7 @@
 #include "../gstadecswitch.c"
 #pragma GCC diagnostic pop
 
-typedef struct { GstElement parent; gboolean multi; gboolean event_multi; gboolean query_multi; } MockAudioSink;
+typedef struct { GstElement parent; gboolean multi; gboolean event_multi; gboolean query_multi; guint acmod; gint out_channels; } MockAudioSink;
 typedef struct { GstElementClass parent; } MockAudioSinkClass;
 G_DEFINE_TYPE (MockAudioSink, mock_audio_sink, GST_TYPE_ELEMENT)
 
@@ -19,6 +19,16 @@ mock_event (GstPad * pad, GstObject * parent, GstEvent * event)
 {
   (void) pad;
   ((MockAudioSink *) parent)->event_multi = ((MockAudioSink *) parent)->multi;
+  if (GST_EVENT_TYPE (event) == GST_EVENT_CAPS) {
+    GstCaps *caps;
+    const GstStructure *s;
+    gst_event_parse_caps (event, &caps);
+    s = gst_caps_get_structure (caps, 0);
+    ((MockAudioSink *) parent)->acmod = 0;
+    ((MockAudioSink *) parent)->out_channels = 0;
+    gst_structure_get_uint (s, "acmod", &((MockAudioSink *) parent)->acmod);
+    gst_structure_get_int (s, "out-channels", &((MockAudioSink *) parent)->out_channels);
+  }
   gst_event_unref (event);
   return TRUE;
 }
@@ -33,7 +43,9 @@ mock_query (GstPad * pad, GstObject * parent, GstQuery * query)
     gst_query_parse_accept_caps (query, &caps);
     gst_structure_get_int (gst_caps_get_structure (caps, 0), "channels", &channels);
     sink->query_multi = sink->multi;
-    gst_query_set_accept_caps_result (query, channels != 8 || sink->multi);
+    /* Confirmed against an inactive C5 sink: 8ch is accepted with the
+     * multichannel flag OFF too; do not model the old speculative limit. */
+    gst_query_set_accept_caps_result (query, channels >= 1 && channels <= 10);
     return TRUE;
   }
   return gst_pad_query_default (pad, parent, query);
@@ -289,9 +301,13 @@ check_one_switch_pcm_layout (gint channels, gint rate, guint64 mask,
       channels, "rate", G_TYPE_INT, rate, "channel-mask", GST_TYPE_BITMASK,
       mask, NULL);
   g_assert_true (gst_pad_push_event (output, gst_event_new_caps (caps)));
-  g_assert_cmpint (enabled (sink), ==, expected);
-  if (expected)
-    g_assert_true (((MockAudioSink *) sink)->event_multi);
+  g_assert_cmpint (enabled (sink), ==, expected && channels == 6);
+  g_assert_cmpint (((MockAudioSink *) sink)->event_multi, ==,
+      expected && channels == 6);
+  g_assert_cmpuint (((MockAudioSink *) sink)->acmod, ==,
+      expected && channels == 8 ? 21 : 0);
+  g_assert_cmpint (((MockAudioSink *) sink)->out_channels, ==,
+      expected && channels == 8 ? 8 : 0);
   g_assert_false (enabled (other));
   gst_caps_unref (caps);
   /* A subsequent unsupported stereo format must release our flag. */
@@ -320,6 +336,48 @@ check_switch_pcm_layouts (void)
   check_one_switch_pcm_layout (2, 48000, 3, "dtsdec", FALSE);
   check_one_switch_pcm_layout (8, 48000, 0xc3f, "avdec_flac", FALSE);
   check_one_switch_pcm_layout (8, 48000, 0xc3f, "dtsdec", TRUE);
+}
+
+static void
+check_pcm71_format_contract (void)
+{
+  GstCaps *source = gst_caps_from_string ("audio/x-raw,format=S32LE,"
+      "layout=interleaved,channels=8,rate=48000,channel-mask=(bitmask)0xc3f");
+  GstCaps *result = dts_pcm71_caps (source);
+  guint mode = 0;
+  g_assert_nonnull (result);
+  g_assert_true (gst_structure_get_uint (gst_caps_get_structure (result, 0),
+          "acmod", &mode));
+  g_assert_cmpuint (mode, ==, 21);
+  g_assert_false (gst_structure_has_field (gst_caps_get_structure (source, 0), "acmod"));
+  g_assert_false (gst_structure_has_field (gst_caps_get_structure (result, 0), "codec"));
+  gst_caps_unref (result);
+  gst_structure_set (gst_caps_get_structure (source, 0), "channel-mask",
+      GST_TYPE_BITMASK, G_GUINT64_CONSTANT (0), NULL);
+  g_assert_null (dts_pcm71_caps (source));
+  gst_structure_set (gst_caps_get_structure (source, 0), "channel-mask",
+      GST_TYPE_BITMASK, G_GUINT64_CONSTANT (0xc3f), "format", G_TYPE_STRING,
+      "F32LE", NULL);
+  g_assert_null (dts_pcm71_caps (source));
+  gst_caps_unref (source);
+}
+
+static void
+check_pcm71_flag_restore (gboolean original)
+{
+  GstElement *pipeline = gst_pipeline_new (NULL);
+  GstElement *decoder = gst_element_factory_make ("identity", NULL);
+  GstElement *sink = gst_element_factory_make ("audiosink", NULL);
+  DtsPcmTarget *target = NULL;
+  gst_bin_add_many (GST_BIN (pipeline), decoder, sink, NULL);
+  g_assert_true (gst_element_link (decoder, sink));
+  g_object_set (sink, "pcm-multi-ch", original, NULL);
+  g_assert_true (dts_pcm_target_configure_full (decoder, &target, NULL, FALSE));
+  g_assert_false (enabled (sink));
+  g_assert_nonnull (target);
+  dts_pcm_target_release (&target);
+  g_assert_cmpint (enabled (sink), ==, original);
+  gst_object_unref (pipeline);
 }
 
 static void
@@ -368,6 +426,9 @@ main (int argc, char **argv)
   check_synchronized_streams ();
   check_switch_pcm_layouts ();
   check_late_sink_query ();
+  check_pcm71_format_contract ();
+  check_pcm71_flag_restore (FALSE);
+  check_pcm71_flag_restore (TRUE);
   decoder = gst_element_factory_make ("identity", NULL);
   g_assert_false (dts_pcm_target_enable (decoder, &target));
   gst_object_unref (decoder);

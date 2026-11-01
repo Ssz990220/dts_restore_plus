@@ -14,6 +14,7 @@ ROOT = Path('/var/lib/webosbrew/dts25')
 RUN = Path('/run/dts25-pcm')
 MARKER = ROOT / 'pcm-multichannel'
 MAT = [2, 7, 0, 0, 1]
+LPCM71 = [2, 1, 8, 0, 1]
 stopping = False
 
 
@@ -48,12 +49,20 @@ def quality(category):
     return next(x['value'] for x in result['settings'] if x['category'] == category)
 
 
-def eligible(sound, receiver):
+def eligible(sound, receiver, channels=6):
+    carrier_supported = 'MAT2PCM' in receiver.get('earcCapability', [])
+    if channels == 8:
+        carrier_supported = any(
+            x.get('audioCodingType') == 'PCM'
+            and isinstance(x.get('maxChannelNumber'), int)
+            and x['maxChannelNumber'] >= 8
+            for x in receiver.get('advancedEarcCapability', [])
+            if isinstance(x, dict))
     return (sound.get('soundOutput') == 'external_arc'
             and sound.get('soundOutputDigital') == 'auto'
             and sound.get('eArcSupport') == 'on'
             and receiver.get('arcActivation') == 'eARC'
-            and 'MAT2PCM' in receiver.get('earcCapability', []))
+            and carrier_supported)
 
 
 def set_ott(value, app):
@@ -87,17 +96,23 @@ def candidate(row, state, app):
     if not isinstance(index, int) or not 0 <= index < len(tracks):
         return None
     track = tracks[index]
-    if (not str(track.get('codec', '')).lower().startswith('dts')
-            or track.get('channels') != 6 or track.get('sampleRate') not in (48, 48000)):
+    codec = str(track.get('codec', '')).lower()
+    channels = track.get('channels')
+    legacy51 = codec.startswith('dts') and channels == 6
+    pcm71 = (app == 'org.moonfin.webos' and channels == 8
+             and (codec.startswith('dts') or codec in ('true-hd', 'truehd', 'mlp', 'opus')))
+    if (not (legacy51 or pcm71) or track.get('sampleRate') not in (48, 48000)):
         return None
     pid, timestamp = row.get('pid'), row.get('timestamp')
     if not isinstance(pid, int) or not isinstance(timestamp, (int, float)):
         return None
-    return {'key': (row['id'], pid, index), 'pid': pid,
+    return {'key': (row['id'], pid, index), 'pid': pid, 'channels': channels,
             'since': timestamp / 1000000000.0, 'app': app}
 
 
-def sink_proven(kernel_log, pid, since):
+def sink_proven(kernel_log, pid, since, channels=6):
+    if channels == 8:
+        return sink_proven71(kernel_log, pid, since)
     # Require both this player's successful flag transition and the following
     # native converter's eight-slot multichannel output (acmod 7). Setting the
     # flag after the first caps event can leave the converter in stereo; that
@@ -130,6 +145,35 @@ def sink_proven(kernel_log, pid, since):
                for first in first_events for output in converters)
 
 
+def sink_proven71(kernel_log, pid, since):
+    # Require the current owner's most recent primary format, not just an
+    # eight-slot transport or an earlier 7.1 track on the same process.
+    primary, converter = None, None
+    own = re.compile(r'\(0*' + str(pid) + r':\d+\)')
+    for line in kernel_log.splitlines():
+        stamp = re.match(r'^\[\s*([0-9.]+)\]', line)
+        if not stamp or float(stamp[1]) < since - 2:
+            continue
+        fields = {}
+        for key in ('channels', 'acmod', 'rate'):
+            value = re.search(r'\b' + key + r'=\(int\)(\d+)(?:\D|$)', line)
+            if value:
+                fields[key] = int(value[1])
+        t = float(stamp[1])
+        if (own.search(line) and 'lgao_push_first_event' in line
+                and 'BYPASS' not in line and 'channels' in fields):
+            primary = (t, fields)
+        if 'Pcmcvt_Event' in line and 'channels' in fields:
+            converter = (t, fields)
+    return bool(primary and converter
+                and primary[1].get('channels') == 8
+                and primary[1].get('acmod') == 21
+                and primary[1].get('rate') == 48000
+                and converter[1].get('channels') == 8
+                and converter[1].get('acmod') == 21
+                and -.05 <= converter[0] - primary[0] <= 5)
+
+
 def find_candidate(app):
     rows = luna('luna://com.webos.media/getActivePipelines', {})
     for row in rows:
@@ -160,18 +204,21 @@ class Session:
 
     def apply(self):
         self.changed = True
-        set_ott({'isOTTEnable': True, 'isATMOSLockingEnable': False}, self.stream['app'])
+        if self.stream.get('channels', 6) == 6:
+            set_ott({'isOTTEnable': True, 'isATMOSLockingEnable': False}, self.stream['app'])
         self.maintain()
 
     def maintain(self):
-        if earc() != MAT and earc(MAT) != MAT:
-            raise RuntimeError('MAT request rejected')
+        target = LPCM71 if self.stream.get('channels', 6) == 8 else MAT
+        if earc() != target and earc(target) != target:
+            raise RuntimeError('PCM carrier request rejected')
 
     def restore(self):
         if not self.changed:
             return
         try:
-            set_ott(self.previous_ott, self.stream['app'])
+            if self.stream.get('channels', 6) == 6:
+                set_ott(self.previous_ott, self.stream['app'])
         finally:
             sound = settings()
             # Never apply the old native PCM channel count to HDMI input,
@@ -179,7 +226,8 @@ class Session:
             if (foreground() == self.stream['app']
                     and sound.get('soundOutput') == 'external_arc'
                     and sound.get('soundOutputDigital') == 'auto'
-                    and sound.get('eArcSupport') == 'on'):
+                    and sound.get('eArcSupport') == 'on'
+                    and (self.stream.get('channels', 6) != 8 or earc() == LPCM71)):
                 earc(self.previous_earc)
             self.changed = False
 
@@ -248,21 +296,30 @@ def watch():
                 try:
                     stream = None
                     app = foreground()
-                    if not (ROOT / 'passthrough').exists() and eligible(settings(), quality('external_arc')):
+                    if not (ROOT / 'passthrough').exists():
                         stream = find_candidate(app)
+                    if stream and not eligible(settings(), quality('external_arc'), stream['channels']):
+                        stream = None
+                    if stream and stream['channels'] == 8:
+                        kernel = subprocess.check_output(['dmesg'], text=True, timeout=4)
+                        if not sink_proven(kernel, stream['pid'], stream['since'], 8):
+                            stream = None
                     if session and (not stream or stream['key'] != session.stream['key']):
                         session.restore()
                         session = None
                     if stream and session is None:
                         kernel = subprocess.check_output(['dmesg'], text=True, timeout=4)
-                        if sink_proven(kernel, stream['pid'], stream['since']):
+                        if (eligible(settings(), quality('external_arc'), stream['channels'])
+                                and sink_proven(kernel, stream['pid'], stream['since'], stream['channels'])):
                             session = Session(stream)
                             session.apply()
                     if session:
                         session.maintain()
-                        write_status('mat-requested', channels=6, app=app)
+                        channels = session.stream['channels']
+                        write_status('lpcm-requested' if channels == 8 else 'mat-requested',
+                                     channels=channels, app=app)
                     else:
-                        write_status('waiting', reason='Waiting for eligible DTS 5.1 and PCM sink proof')
+                        write_status('waiting', reason='Waiting for eligible PCM layout and sink proof')
                 except Exception as error:
                     if session:
                         session.restore()

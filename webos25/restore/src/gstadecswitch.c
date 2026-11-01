@@ -250,7 +250,7 @@ gst_adecswitch_pcm_caps_probe (GstPad * pad, GstPadProbeInfo * info,
   g_mutex_lock (&self->pcm_lock);
   dts_pcm_watch_stop (&self->pcm_watch);
   if (eligible)
-    self->pcm_watch = dts_pcm_watch_new (GST_ELEMENT (self));
+    self->pcm_watch = dts_pcm_watch_new_full (GST_ELEMENT (self), channels == 6);
   g_mutex_unlock (&self->pcm_lock);
   return GST_PAD_PROBE_OK;
 }
