@@ -275,9 +275,14 @@
       : s.pcmMultichannelPhase === "lpcm-requested" ? "LPCM 7.1 requested — verify every speaker"
       : s.pcmMultichannelPhase === "waiting" ? "on — waiting for eligible multichannel playback"
       : "on — " + (s.pcmMultichannelPhase || "waiting"), s.pcmMultichannelRequested ? "warn" : null);
+    $("cardTruehdEarc").hidden = !canW25Test;
+    $("btnTruehdEarcOn").disabled = !canW25Test || s.truehdEarcRequested === true || s.passthroughRequested === true;
+    $("btnTruehdEarcOff").disabled = !canW25Test || s.truehdEarcRequested !== true;
+    setVal("sTruehdEarc", !s.truehdEarcRequested ? "off"
+      : s.pcmMultichannelPhase === "truehd-es-requested" ? "TrueHD bitstream requested" : "enabled", s.truehdEarcRequested ? "warn" : null);
     // DTS passthrough: also webOS 25 only, since it lives in the webOS 25 dtsdec.
     $("cardPassthrough").hidden = !canW25Test;
-    $("btnPtOn").disabled  = !canW25Test || s.passthroughRequested === true;
+    $("btnPtOn").disabled  = !canW25Test || s.passthroughRequested === true || s.truehdEarcRequested === true;
     $("btnPtOff").disabled = !canW25Test || s.passthroughRequested !== true;
     setVal("sPt", !s.passthroughRequested ? "off"
       : s.passthroughToReceiver ? "on — DTS goes to the receiver"
@@ -491,6 +496,14 @@
       toast(res.summary || "Saved", res.returnValue ? "ok" : "err");
       return refreshStatus();
     }).catch(function (e) { toast("PCM mode failed: " + errText(e), "err"); });
+  }
+
+  function doTruehdEarc(on) {
+    toast(on ? "Enabling TrueHD eARC…" : "Disabling TrueHD eARC…", "busy");
+    callService("setTruehdEarc", {enabled: on}).then(function (res) {
+      toast(res.summary || "Saved", res.returnValue ? "ok" : "err");
+      return refreshStatus();
+    }).catch(function (e) { toast("TrueHD eARC failed: " + errText(e), "err"); });
   }
 
   function doPassthrough(on) {
@@ -876,6 +889,8 @@
     $("btnAppDtsOn").addEventListener("click", function () { doAppDts(true); });
     $("btnAppDtsOff").addEventListener("click", function () { doAppDts(false); });
     $("btnAppDtsReboot").addEventListener("click", doAppDtsReboot);
+    $("btnTruehdEarcOn").addEventListener("click", function () { doTruehdEarc(true); });
+    $("btnTruehdEarcOff").addEventListener("click", function () { doTruehdEarc(false); });
     $("btnPcmOn").addEventListener("click", function () { doPcmMultichannel(true); });
     $("btnPcmOff").addEventListener("click", function () { doPcmMultichannel(false); });
     $("btnPtOn").addEventListener("click", function () { doPassthrough(true); });

@@ -9,10 +9,12 @@ import re
 import signal
 import subprocess
 import time
+from truehd_policy import DIRECTORY as TRUEHD_RUN, read_proof, acknowledge, revoke, set_allowed
 
 ROOT = Path('/var/lib/webosbrew/dts25')
 RUN = Path('/run/dts25-pcm')
 MARKER = ROOT / 'pcm-multichannel'
+TRUEHD_MARKER = ROOT / 'truehd-earc.enabled'
 MAT = [2, 7, 0, 0, 1]
 LPCM71 = [2, 1, 8, 0, 1]
 stopping = False
@@ -49,7 +51,7 @@ def quality(category):
     return next(x['value'] for x in result['settings'] if x['category'] == category)
 
 
-def eligible(sound, receiver, channels=6):
+def eligible(sound, receiver, channels=6, mode='pcm'):
     carrier_supported = 'MAT2PCM' in receiver.get('earcCapability', [])
     if channels == 8:
         carrier_supported = any(
@@ -58,8 +60,14 @@ def eligible(sound, receiver, channels=6):
             and x['maxChannelNumber'] >= 8
             for x in receiver.get('advancedEarcCapability', [])
             if isinstance(x, dict))
+    if mode == 'truehd-es':
+        carrier_supported = ('TrueHD' in receiver.get('earcCapability', []) and any(
+            x.get('audioCodingType') == 'TrueHD'
+            and isinstance(x.get('maxChannelNumber'), int)
+            and x['maxChannelNumber'] >= channels
+            for x in receiver.get('advancedEarcCapability', []) if isinstance(x, dict)))
     return (sound.get('soundOutput') == 'external_arc'
-            and sound.get('soundOutputDigital') == 'auto'
+            and sound.get('soundOutputDigital') in (('auto', 'passthrough') if mode == 'truehd-es' else ('auto',))
             and sound.get('eArcSupport') == 'on'
             and receiver.get('arcActivation') == 'eARC'
             and carrier_supported)
@@ -85,14 +93,44 @@ def earc(value=None):
 
 def candidate(row, state, app):
     if (not app or row.get('type') != 'media' or row.get('currentAppId') != app
-            or not row.get('is_foreground') or state.get('media_state') != 'play'
+            or not row.get('is_foreground') or state.get('media_state') not in ('play', 'pause')
             or not any(x.get('resource') == 'ADEC' for x in row.get('resource', []))):
+        return None
+    pid, timestamp = row.get('pid'), row.get('timestamp')
+    if not isinstance(pid, int) or not isinstance(timestamp, (int, float)):
+        return None
+    index = state.get('audioInfo', {}).get('track', 0)
+    if TRUEHD_MARKER.exists() and not (ROOT / 'passthrough').exists():
+        ports = {x.get('index') for x in row.get('resource', [])
+                 if x.get('resource') == 'ADEC' and type(x.get('index')) is int
+                 and x['index'] in (0, 1)}
+        if ports:
+            # The format verified from the current C decoder's major header
+            # wins over uMS's sometimes conservative source-track metadata.
+            proofs = [proof for port in ports
+                      if (proof := read_proof(pid, port, 6) or read_proof(pid, port, 8))]
+            if len(proofs) > 1:
+                return None
+            # Pending ES proof must not fall through to the older PCM policy.
+            if proofs:
+                proof = proofs[0]
+                if any(port != proof['port'] and (TRUEHD_RUN / f'{pid}.{port}.ini').exists()
+                       for port in ports):
+                    return None
+                if not proof['ready']:
+                    return None
+                return {'key': (row['id'], pid, index, proof['token']), 'pid': pid,
+                        'channels': proof['channels'], 'codec': 'truehd-es', 'rate': 48000,
+                        'since': timestamp / 1e9, 'app': app, 'mode': 'truehd-es', 'proof': proof,
+                        'paused': state.get('media_state') == 'pause'}
+            if any((TRUEHD_RUN / f'{pid}.{port}.ini').exists() for port in ports):
+                return None
+    if state.get('media_state') != 'play':
         return None
     programs = state.get('sourceInfo', {}).get('programInfo', [])
     if not programs:
         return None
     tracks = programs[0].get('audioTrackInfo', [])
-    index = state.get('audioInfo', {}).get('track', 0)
     if not isinstance(index, int) or not 0 <= index < len(tracks):
         return None
     track = tracks[index]
@@ -102,9 +140,6 @@ def candidate(row, state, app):
     pcm71 = (app == 'org.moonfin.webos' and channels == 8
              and (codec.startswith('dts') or codec in ('true-hd', 'truehd', 'mlp', 'opus')))
     if (not (legacy51 or pcm71) or track.get('sampleRate') not in (48, 48000)):
-        return None
-    pid, timestamp = row.get('pid'), row.get('timestamp')
-    if not isinstance(pid, int) or not isinstance(timestamp, (int, float)):
         return None
     return {'key': (row['id'], pid, index), 'pid': pid, 'channels': channels,
             'codec': codec, 'rate': 48000,
@@ -156,8 +191,8 @@ def pcm71_evidence(kernel_log, pid, since):
         if not stamp or float(stamp[1]) < since - 2:
             continue
         fields = {}
-        for key in ('channels', 'acmod', 'rate'):
-            value = re.search(r'\b' + key + r'=\(int\)(\d+)(?:\D|$)', line)
+        for key in ('channels', 'acmod', 'rate', 'codec'):
+            value = re.search(r'\b' + key + r'=\(u?int\)(\d+)(?:\D|$)', line)
             if value:
                 fields[key] = int(value[1])
         t = float(stamp[1])
@@ -173,7 +208,8 @@ def pcm71_primary_valid(primary):
     return bool(primary
                 and primary[1].get('channels') == 8
                 and primary[1].get('acmod') == 21
-                and primary[1].get('rate') == 48000)
+                and primary[1].get('rate') == 48000
+                and primary[1].get('codec') != 21)
 
 
 def sink_proven71(kernel_log, pid, since):
@@ -260,20 +296,25 @@ class Session:
 
     def apply(self):
         self.changed = True
-        if self.stream.get('channels', 6) == 6:
+        if self.stream.get('channels', 6) == 6 and self.stream.get('mode') != 'truehd-es':
             set_ott({'isOTTEnable': True, 'isATMOSLockingEnable': False}, self.stream['app'])
         self.maintain()
 
     def maintain(self):
-        target = LPCM71 if self.stream.get('channels', 6) == 8 else MAT
+        target = ([2, 6, self.stream['channels'], 0, 0] if self.stream.get('mode') == 'truehd-es'
+                  else LPCM71 if self.stream.get('channels', 6) == 8 else MAT)
         if earc() != target and earc(target) != target:
             raise RuntimeError('PCM carrier request rejected')
+        if self.stream.get('mode') == 'truehd-es':
+            acknowledge(self.stream['proof'], earc())
 
     def restore(self):
         if not self.changed:
             return
         try:
-            if self.stream.get('channels', 6) == 6:
+            if self.stream.get('mode') == 'truehd-es':
+                revoke(self.stream['proof'])
+            elif self.stream.get('channels', 6) == 6:
                 set_ott(self.previous_ott, self.stream['app'])
         finally:
             sound = settings()
@@ -281,9 +322,10 @@ class Session:
             # another app, TV speakers, or a newly selected output policy.
             if (foreground() == self.stream['app']
                     and sound.get('soundOutput') == 'external_arc'
-                    and sound.get('soundOutputDigital') == 'auto'
+                    and sound.get('soundOutputDigital') in (('auto', 'passthrough') if self.stream.get('mode') == 'truehd-es' else ('auto',))
                     and sound.get('eArcSupport') == 'on'
-                    and (self.stream.get('channels', 6) != 8 or earc() == LPCM71)):
+                    and (earc() == [2, 6, self.stream['channels'], 0, 0] if self.stream.get('mode') == 'truehd-es'
+                         else self.stream.get('channels', 6) != 8 or earc() == LPCM71)):
                 earc(self.previous_earc)
             self.changed = False
 
@@ -349,31 +391,41 @@ def watch():
         session = None
         proof71 = Pcm71Proof()
         try:
-            while MARKER.exists() and owner_present() and not stopping:
+            while (MARKER.exists() or TRUEHD_MARKER.exists()) and owner_present() and not stopping:
                 try:
                     stream = None
                     app = foreground()
+                    if TRUEHD_MARKER.exists() and not (ROOT / 'passthrough').exists():
+                        output, receiver = settings(), quality('external_arc')
+                        for ch in (6, 8):
+                            set_allowed(ch, eligible(output, receiver, ch, 'truehd-es'))
+                    else:
+                        for ch in (6, 8):
+                            set_allowed(ch, False)
                     if not (ROOT / 'passthrough').exists():
                         stream = find_candidate(app, proof71)
-                    if stream and not eligible(settings(), quality('external_arc'), stream['channels']):
+                        if stream and stream.get('mode') != 'truehd-es' and not MARKER.exists():
+                            stream = None
+                    if stream and not eligible(settings(), quality('external_arc'), stream['channels'], stream.get('mode', 'pcm')):
                         stream = None
-                    if stream and stream['channels'] == 8:
+                    if stream and stream['channels'] == 8 and stream.get('mode') != 'truehd-es':
                         kernel = subprocess.check_output(['dmesg'], text=True, timeout=4)
                         if not proof71.accept(stream, kernel):
                             stream = None
                     if session and (not stream or stream['key'] != session.stream['key']):
                         session.restore()
                         session = None
-                    if stream and session is None:
+                    if stream and session is None and not stream.get('paused'):
                         kernel = subprocess.check_output(['dmesg'], text=True, timeout=4)
-                        if (eligible(settings(), quality('external_arc'), stream['channels'])
-                                and (stream['channels'] == 8 or sink_proven(kernel, stream['pid'], stream['since']))):
+                        if (eligible(settings(), quality('external_arc'), stream['channels'], stream.get('mode', 'pcm'))
+                                and (stream.get('mode') == 'truehd-es' or stream['channels'] == 8 or sink_proven(kernel, stream['pid'], stream['since']))):
                             session = Session(stream)
                             session.apply()
                     if session:
                         session.maintain()
                         channels = session.stream['channels']
-                        write_status('lpcm-requested' if channels == 8 else 'mat-requested',
+                        write_status('truehd-es-requested' if session.stream.get('mode') == 'truehd-es'
+                                     else 'lpcm-requested' if channels == 8 else 'mat-requested',
                                      channels=channels, app=app)
                     else:
                         write_status('waiting', reason='Waiting for eligible PCM layout and sink proof')
@@ -390,6 +442,8 @@ def watch():
                 if session:
                     session.restore()
             finally:
+                for ch in (6, 8):
+                    set_allowed(ch, False)
                 write_status('stopped')
                 (RUN / 'watcher.pid').unlink(missing_ok=True)
 

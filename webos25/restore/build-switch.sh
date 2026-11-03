@@ -54,15 +54,22 @@ docker run --rm -i --platform linux/arm64 \
       libgstreamer1.0-dev:armel \
       libglib2.0-dev:armel >/dev/null 2>&1
 
-    cp /work/gstadecswitch.c /work/gstadecswitch.h /tmp/
+    cp /work/gstadecswitch.c /work/gstadecswitch.h /work/gstwebospcm*.h /tmp/
     cd /tmp
 
     export PKG_CONFIG_LIBDIR=/usr/lib/arm-linux-gnueabi/pkgconfig:/usr/share/pkgconfig
     CF=$(pkg-config --cflags gstreamer-1.0)
     LB=$(pkg-config --libs   gstreamer-1.0)
 
+    arm-linux-gnueabi-gcc -shared -fPIC -O2 -Wall -o /out/libgstcodextruehdmat.so \
+      /work/gstcodextruehdmat.c /work/truehd_mat_adapter.c /work/truehd_native.c /work/truehd_output.c \
+      -DVERSION='"1.24.0-webosdts"' -DPACKAGE='"dts_restore_plus"' \
+      $CF $LB -ldl -Wl,--no-undefined
+    arm-linux-gnueabi-strip --strip-unneeded /out/libgstcodextruehdmat.so
+    BRIDGE_SHA=$(sha256sum /out/libgstcodextruehdmat.so | cut -d ' ' -f 1)
+
     arm-linux-gnueabi-gcc -shared -fPIC -O2 -Wall -o /out/libgstadecswitch.so \
-      gstadecswitch.c \
+      gstadecswitch.c -DCODEX_MANAGED_TEST=1 -DCODEX_MANAGED_BRIDGE_SHA256="\"$BRIDGE_SHA\"" \
       -DVERSION='"1.24.0-webosdts"' \
       -DPACKAGE='"dts_restore_plus"' \
       -DGST_PACKAGE_NAME='"WebOS DTS restore"' \

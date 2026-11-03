@@ -59,14 +59,15 @@ jobs:
           test "$SOURCE" = "$(gh run view "$DECODER_RUN" --json headSha --jq .headSha)"
           # Only compiled-source identity is shared with the decoder artifact.
           # The current Python policy is tested below and hashed in app provenance.
-          git diff --exit-code "$SOURCE" HEAD -- webos25/restore/src/gstdtsdec.c webos25/restore/src/gstdtsdec.h webos25/restore/src/gstadecswitch.c webos25/restore/src/gstadecswitch.h webos25/restore/src/gstwebospcm.h webos25/restore/src/gstwebospcmwatch.h webos25/restore/src/gstwebospcm71.h webos25/restore/build.sh
+          git diff --exit-code "$SOURCE" HEAD -- webos25/restore/src/gstdtsdec.c webos25/restore/src/gstdtsdec.h webos25/restore/src/gstadecswitch.c webos25/restore/src/gstadecswitch.h webos25/restore/src/gstwebospcm.h webos25/restore/src/gstwebospcmwatch.h webos25/restore/src/gstwebospcm71.h webos25/restore/src/gstcodextruehdmat.c webos25/restore/src/truehd_*.c webos25/restore/src/truehd_*.h webos25/restore/build.sh
           (cd /tmp/decoder && sha256sum --check SHA256SUMS)
           if [ '${{ inputs.publish }}' = true ]; then
             cmp /tmp/decoder/libgstdtsdec.so webos25/restore/out/libgstdtsdec.so
             cmp /tmp/decoder/libgstadecswitch.so webos25/restore/switch-out/libgstadecswitch.so
+            cmp /tmp/decoder/libgstcodextruehdmat.so webos25/restore/switch-out/libgstcodextruehdmat.so
           fi
           cp /tmp/decoder/libgstdtsdec.so webos25/restore/out/libgstdtsdec.so
-          cp /tmp/decoder/libgstadecswitch.so webos25/restore/switch-out/libgstadecswitch.so
+          cp /tmp/decoder/libgstadecswitch.so /tmp/decoder/libgstcodextruehdmat.so webos25/restore/switch-out/
       - name: Test app and policy packaging
         run: |
           node --check webos25/app/service/service.js
@@ -78,8 +79,8 @@ jobs:
       - name: Populate the app payload
         run: |
           cp webos25/restore/out/libgstdtsdec.so webos25/app/payload/webos25/
-          cp webos25/restore/pcm-mat-watch.py webos25/app/payload/webos25/
-          cp webos25/restore/switch-out/libgstadecswitch.so webos25/app/payload/webos25/
+          cp webos25/restore/pcm-mat-watch.py webos25/restore/truehd_policy.py webos25/app/payload/webos25/
+          cp webos25/restore/switch-out/libgstadecswitch.so webos25/restore/switch-out/libgstcodextruehdmat.so webos25/app/payload/webos25/
           cp -P webos25/restore/truehd-out/libgstlibav.so webos25/restore/truehd-out/libav*.so* webos25/restore/truehd-out/libsw*.so* webos25/app/payload/webos25-truehd/
           cp webos25/restore/demux-out/libgst*.so webos25/app/payload/webos25-demux/
           mkdir -p webos25/app/payload/c2-ts

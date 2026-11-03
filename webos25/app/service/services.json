@@ -51,6 +51,10 @@
           "description": "Delete the rendered A/B clips from the app directory"
         },
         {
+          "name": "setTruehdEarc",
+          "description": "Enable or disable TrueHD bitstream routing on a supported C5"
+        },
+        {
           "name": "setPcmMultichannel",
           "description": "Enable or stop the experimental C5 decoded PCM 5.1 route"
         }

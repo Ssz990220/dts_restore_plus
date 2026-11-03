@@ -123,8 +123,15 @@ docker run --rm -i --platform "$BUILD_PLATFORM" \
       $CF /tmp/ffdca/lib/libavcodec.a /tmp/ffdca/lib/libavutil.a $LB -lm \
       -Wl,--exclude-libs,ALL -Wl,--no-undefined
 
+    arm-linux-gnueabi-gcc -shared -fPIC -O2 -Wall -o /out/libgstcodextruehdmat.so \
+      /work/gstcodextruehdmat.c /work/truehd_mat_adapter.c /work/truehd_native.c /work/truehd_output.c \
+      -DVERSION='"1.24.0-webosdts"' -DPACKAGE='"dts_restore_plus"' \
+      $CF $LB -ldl -Wl,--no-undefined
+    arm-linux-gnueabi-strip --strip-unneeded /out/libgstcodextruehdmat.so
+    BRIDGE_SHA=$(sha256sum /out/libgstcodextruehdmat.so | cut -d ' ' -f 1)
+
     arm-linux-gnueabi-gcc -shared -fPIC -O2 -Wall -o /out/libgstadecswitch.so \
-      gstadecswitch.c -DVERSION='"1.24.0-webosdts"' \
+      gstadecswitch.c -DCODEX_MANAGED_TEST=1 -DCODEX_MANAGED_BRIDGE_SHA256="\"$BRIDGE_SHA\"" -DVERSION='"1.24.0-webosdts"' \
       -DPACKAGE='"dts_restore_plus"' -DGST_PACKAGE_NAME='"WebOS PCM restore"' \
       -DGST_PACKAGE_ORIGIN='"https://github.com/Ssz990220/dts_restore_plus"' \
       $CF $LB -Wl,--no-undefined

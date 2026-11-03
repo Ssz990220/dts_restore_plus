@@ -38,6 +38,10 @@
 
 #include "gstadecswitch.h"
 #include "gstwebospcmwatch.h"
+#if defined(CODEX_MANAGED_TEST) && defined(__linux__)
+#include <fcntl.h>
+#include <unistd.h>
+#endif
 
 GST_DEBUG_CATEGORY_STATIC (adecswitch_debug);
 #define GST_CAT_DEFAULT adecswitch_debug
@@ -54,13 +58,33 @@ GST_DEBUG_CATEGORY_STATIC (adecswitch_debug);
 #define ADECSWITCH_MAX_SEEK_HOLD_US (500 * G_TIME_SPAN_MILLISECOND)
 
 #define DECPROXY_FACTORY "decproxy"
+#ifdef CODEX_MANAGED_TEST
+#define TRUEHD_ENABLE "/var/lib/webosbrew/dts25/truehd-earc.enabled"
+static gboolean managed_bridge_available;
+
+static gboolean
+managed_file_hash (const gchar *path, const gchar *expected)
+{
+  gchar *data = NULL, *hash;
+  gsize size;
+  gboolean ok;
+  if (!g_file_get_contents (path, &data, &size, NULL)) return FALSE;
+  hash = g_compute_checksum_for_data (G_CHECKSUM_SHA256, (guchar *) data, size);
+  ok = g_strcmp0 (hash, expected) == 0;
+  g_free (data); g_free (hash); return ok;
+}
+#endif
 
 enum
 {
   PROP_0,
   PROP_HW_TEARDOWN_GRACE_MS,
   PROP_POST_CHANGING_DECODER,
-  PROP_PCM_MULTICHANNEL
+  PROP_PCM_MULTICHANNEL,
+  PROP_TRUEHD_PASSTHROUGH,
+  PROP_RESOURCE_PORT,
+  PROP_AUTOMATIC_RESOURCE,
+  PROP_MANAGED_POLICY
 };
 
 /* Every family we can host, so decodebin3's accept-caps probe on our sink pad
@@ -83,7 +107,7 @@ static GstStaticPadTemplate src_template = GST_STATIC_PAD_TEMPLATE ("src",
     GST_PAD_ALWAYS,
     GST_STATIC_CAPS ("audio/x-raw; audio/x-media"));
 
-G_DEFINE_TYPE (GstAdecSwitch, gst_adecswitch, GST_TYPE_BIN);
+G_DEFINE_TYPE (GstCodexAdecSwitch, gst_codex_adecswitch, GST_TYPE_BIN);
 
 /* ---------------------------------------------------------------------------
  * Our own factory rank while an inner decproxy is alive.
@@ -117,7 +141,7 @@ static GMutex adecswitch_rank_lock;
 static guint adecswitch_hw_users;
 
 static void
-gst_adecswitch_rank_hold (GstAdecSwitch * self)
+gst_codex_adecswitch_rank_hold (GstCodexAdecSwitch * self)
 {
   GstElementFactory *factory = gst_element_get_factory (GST_ELEMENT_CAST (self));
 
@@ -131,7 +155,7 @@ gst_adecswitch_rank_hold (GstAdecSwitch * self)
 }
 
 static void
-gst_adecswitch_rank_release (GstAdecSwitch * self)
+gst_codex_adecswitch_rank_release (GstCodexAdecSwitch * self)
 {
   GstElementFactory *factory = gst_element_get_factory (GST_ELEMENT_CAST (self));
 
@@ -151,7 +175,7 @@ gst_adecswitch_rank_release (GstAdecSwitch * self)
  * TrueHD -> MLP a switch (different factory) and AC-3 -> E-AC-3 not one
  * (decproxy swaps its own inner decoder for that). */
 static const gchar *
-gst_adecswitch_factory_for_caps (GstCaps * caps)
+gst_codex_adecswitch_factory_for_caps (GstCaps * caps)
 {
   const GstStructure *s;
   const gchar *name;
@@ -179,8 +203,49 @@ gst_adecswitch_factory_for_caps (GstCaps * caps)
   return NULL;
 }
 
+static const gchar *
+gst_codex_adecswitch_factory_for_mode (GstCodexAdecSwitch * self, GstCaps * caps)
+{
+  const gchar *factory_name = gst_codex_adecswitch_factory_for_caps (caps);
+  /* An opt-in TrueHD-only branch. No changes to Dolby, MLP or DTS factory
+   * selection. A caller-granted port and inspected source format are required;
+   * absent conditions retain the existing software decoder. */
+  if (factory_name && !g_strcmp0 (factory_name, "avdec_truehd") &&
+      self->truehd_passthrough && (self->resource_port >= 0 || self->automatic_resource) &&
+      self->parked_hw == NULL && g_strcmp0 (self->decoder_factory, DECPROXY_FACTORY)) {
+    const GstStructure *s = gst_caps_get_structure (caps, 0);
+    gint rate = 0, channels = 0;
+    GstElementFactory *bridge;
+#ifdef CODEX_MANAGED_TEST
+    /* plugin_init runs under GStreamer's non-recursive plugin-loading mutex.
+     * Load the dependency here, after the switch has been created and linked,
+     * rather than recursively loading another module from plugin_init. */
+    if (managed_bridge_available) {
+      GstPlugin *module = gst_plugin_load_file (
+          "/var/lib/webosbrew/dts25/libgstcodextruehdmat.so", NULL);
+      if (module) gst_object_unref (module);
+    }
+#endif
+    bridge = gst_element_factory_find ("codextruehdmat");
+    if (bridge && gst_structure_get_int (s, "rate", &rate) && rate == 48000 &&
+        gst_structure_get_int (s, "channels", &channels) &&
+        (channels == 6 || channels == 8)) {
+      gboolean allowed = TRUE;
+#ifdef CODEX_MANAGED_TEST
+      gchar *permit = g_strdup_printf ("/run/dts25-truehd-es/allow-%d", channels);
+      allowed = managed_bridge_available && g_file_test (TRUEHD_ENABLE, G_FILE_TEST_IS_REGULAR) &&
+          g_file_test (permit, G_FILE_TEST_IS_REGULAR);
+      g_free (permit);
+#endif
+      if (allowed) factory_name = "codextruehdmat";
+    }
+    if (bridge) gst_object_unref (bridge);
+  }
+  return factory_name;
+}
+
 static gboolean
-gst_adecswitch_is_decproxy (GstElement * element)
+gst_codex_adecswitch_is_decproxy (GstElement * element)
 {
   GstElementFactory *factory = gst_element_get_factory (element);
 
@@ -189,7 +254,7 @@ gst_adecswitch_is_decproxy (GstElement * element)
 }
 
 static void
-gst_adecswitch_pcm_stop (GstAdecSwitch * self)
+gst_codex_adecswitch_pcm_stop (GstCodexAdecSwitch * self)
 {
   g_mutex_lock (&self->pcm_lock);
   dts_pcm_watch_stop (&self->pcm_watch);
@@ -197,7 +262,7 @@ gst_adecswitch_pcm_stop (GstAdecSwitch * self)
 }
 
 static void
-gst_adecswitch_pcm_prepare (GstAdecSwitch * self, const gchar *factory)
+gst_codex_adecswitch_pcm_prepare (GstCodexAdecSwitch * self, const gchar *factory)
 {
   /* The sink's ACCEPT_CAPS query may otherwise reject 8ch before the first
    * raw CAPS event can reach our output probe. Only software decoders opt in;
@@ -218,11 +283,12 @@ gst_adecswitch_pcm_prepare (GstAdecSwitch * self, const gchar *factory)
  * Only standard 48 kHz 5.1/7.1 PCM layouts from our software decoders qualify.
  * Hardware Dolby's audio/x-media path is never configured here. */
 static GstPadProbeReturn
-gst_adecswitch_pcm_caps_probe (GstPad * pad, GstPadProbeInfo * info,
+gst_codex_adecswitch_pcm_caps_probe (GstPad * pad, GstPadProbeInfo * info,
     gpointer data)
 {
-  GstAdecSwitch *self = GST_ADECSWITCH (data);
+  GstCodexAdecSwitch *self = GST_CODEX_ADECSWITCH (data);
   GstEvent *event = GST_PAD_PROBE_INFO_EVENT (info);
+  (void) pad;
   GstCaps *caps = NULL;
   const GstStructure *s;
   gint channels = 0, rate = 0;
@@ -263,9 +329,9 @@ gst_adecswitch_pcm_caps_probe (GstPad * pad, GstPadProbeInfo * info,
  * proxy caps queries through their internal links, and that is exactly the
  * forwarding we must not do here. */
 static gboolean
-gst_adecswitch_sink_query (GstPad * pad, GstObject * parent, GstQuery * query)
+gst_codex_adecswitch_sink_query (GstPad * pad, GstObject * parent, GstQuery * query)
 {
-  GstAdecSwitch *self = GST_ADECSWITCH (parent);
+  GstCodexAdecSwitch *self = GST_CODEX_ADECSWITCH (parent);
   GstCaps *tmpl;
 
   switch (GST_QUERY_TYPE (query)) {
@@ -310,11 +376,11 @@ gst_adecswitch_sink_query (GstPad * pad, GstObject * parent, GstQuery * query)
  * decproxy going to NULL tears down the DSP decoder, which is exactly the
  * operation whose timing we are trying to control. */
 static void
-gst_adecswitch_teardown_decoder (GstElement * element, gpointer user_data)
+gst_codex_adecswitch_teardown_decoder (GstElement * element, gpointer user_data)
 {
-  GstAdecSwitch *self = GST_ADECSWITCH (element);
+  GstCodexAdecSwitch *self = GST_CODEX_ADECSWITCH (element);
   GstElement *decoder = GST_ELEMENT_CAST (user_data);
-  gboolean was_hw = gst_adecswitch_is_decproxy (decoder);
+  gboolean was_hw = gst_codex_adecswitch_is_decproxy (decoder);
 
   GST_INFO_OBJECT (self, "tearing down %" GST_PTR_FORMAT " (hardware: %d)",
       decoder, was_hw);
@@ -327,7 +393,7 @@ gst_adecswitch_teardown_decoder (GstElement * element, gpointer user_data)
     self->hw_teardown_pending--;
     g_cond_broadcast (&self->cond);
     g_mutex_unlock (&self->lock);
-    gst_adecswitch_rank_release (self);
+    gst_codex_adecswitch_rank_release (self);
   }
 
   GST_DEBUG_OBJECT (self, "teardown of %s done", GST_OBJECT_NAME (decoder));
@@ -336,7 +402,7 @@ gst_adecswitch_teardown_decoder (GstElement * element, gpointer user_data)
 /* Block until no decproxy teardown is in flight and @grace_us has elapsed
  * since the last one reached NULL, capped at @cap_us in total. */
 static void
-gst_adecswitch_wait_hw_teardown (GstAdecSwitch * self, gint64 grace_us,
+gst_codex_adecswitch_wait_hw_teardown (GstCodexAdecSwitch * self, gint64 grace_us,
     gint64 cap_us)
 {
   gint64 started = g_get_monotonic_time ();
@@ -379,11 +445,12 @@ gst_adecswitch_wait_hw_teardown (GstAdecSwitch * self, gint64 grace_us,
  * decproxy handles in gst_decproxy_src_event() (gstdecproxy2.c:1317-1412) — is
  * forwarded unchanged. Nothing is consumed: the probe always returns OK. */
 static GstPadProbeReturn
-gst_adecswitch_src_event_probe (GstPad * pad, GstPadProbeInfo * info,
+gst_codex_adecswitch_src_event_probe (GstPad * pad, GstPadProbeInfo * info,
     gpointer user_data)
 {
-  GstAdecSwitch *self = GST_ADECSWITCH (user_data);
+  GstCodexAdecSwitch *self = GST_CODEX_ADECSWITCH (user_data);
   GstEvent *event = GST_PAD_PROBE_INFO_EVENT (info);
+  (void) pad;
 
   /* uMS grants the audio decoder resource exactly once per pipeline, long
    * before any track switch. decproxy needs it to leave the puppet state and
@@ -398,34 +465,37 @@ gst_adecswitch_src_event_probe (GstPad * pad, GstPadProbeInfo * info,
   }
 
   if (GST_EVENT_TYPE (event) == GST_EVENT_SEEK)
-    gst_adecswitch_wait_hw_teardown (self,
+    gst_codex_adecswitch_wait_hw_teardown (self,
         (gint64) self->grace_ms * G_TIME_SPAN_MILLISECOND,
         ADECSWITCH_MAX_SEEK_HOLD_US);
 
   return GST_PAD_PROBE_OK;
 }
 
+
+
 /* Downstream events on the sink ghost pad. A CAPS event naming a different
  * family is the one and only switch trigger; same-family caps changes are
  * forwarded untouched. Runs on the streaming thread with that pad's stream
  * lock held (gstpad.c:5473-5486), so no data can overtake the swap. */
 static GstPadProbeReturn
-gst_adecswitch_sink_event_probe (GstPad * pad, GstPadProbeInfo * info,
+gst_codex_adecswitch_sink_event_probe (GstPad * pad, GstPadProbeInfo * info,
     gpointer user_data)
 {
-  GstAdecSwitch *self = GST_ADECSWITCH (user_data);
+  GstCodexAdecSwitch *self = GST_CODEX_ADECSWITCH (user_data);
   GstEvent *event = GST_PAD_PROBE_INFO_EVENT (info);
   GstElement *old_decoder, *decoder;
   const gchar *factory_name;
   gboolean is_hw, reused = FALSE;
   GstCaps *caps = NULL;
   GstPad *target;
+  (void) pad;
 
   if (GST_EVENT_TYPE (event) != GST_EVENT_CAPS)
     return GST_PAD_PROBE_OK;
 
   gst_event_parse_caps (event, &caps);
-  factory_name = gst_adecswitch_factory_for_caps (caps);
+  factory_name = gst_codex_adecswitch_factory_for_mode (self, caps);
   if (factory_name == NULL) {
     /* Can only happen if our template and this function disagree. */
     GST_ERROR_OBJECT (self, "no inner decoder for %" GST_PTR_FORMAT, caps);
@@ -433,14 +503,24 @@ gst_adecswitch_sink_event_probe (GstPad * pad, GstPadProbeInfo * info,
   }
   if (self->decoder != NULL && !g_strcmp0 (self->decoder_factory,
           factory_name)) {
-    gst_adecswitch_pcm_prepare (self, factory_name);
+    gst_codex_adecswitch_pcm_prepare (self, factory_name);
     GST_DEBUG_OBJECT (self, "same family (%s), forwarding %" GST_PTR_FORMAT,
         factory_name, caps);
     return GST_PAD_PROBE_OK;
   }
 
   old_decoder = self->decoder;
-  gst_adecswitch_pcm_stop (self);
+  gst_codex_adecswitch_pcm_stop (self);
+  /* Retire our own auxiliary native context before the next family obtains
+   * its decoder. This bin's streaming pad lock prevents data overtaking the
+   * transition. Normal Dolby decproxy parking remains unchanged. */
+  if (old_decoder && !g_strcmp0 (self->decoder_factory, "codextruehdmat")) {
+    gst_element_set_locked_state (old_decoder, TRUE);
+    if (gst_element_set_state (old_decoder, GST_STATE_NULL) == GST_STATE_CHANGE_FAILURE) {
+      GST_ELEMENT_ERROR (self, CORE, STATE_CHANGE, ("TrueHD test context could not stop"), (NULL));
+      return GST_PAD_PROBE_DROP;
+    }
+  }
   is_hw = !g_strcmp0 (factory_name, DECPROXY_FACTORY);
   GST_INFO_OBJECT (self, "switching inner decoder %s -> %s for %" GST_PTR_FORMAT,
       self->decoder_factory ? self->decoder_factory : "(none)", factory_name,
@@ -462,16 +542,20 @@ gst_adecswitch_sink_event_probe (GstPad * pad, GstPadProbeInfo * info,
    * from the registry and would otherwise pick us (gstdecproxy2.c:1413-1481).
    * Released when the decproxy is finally destroyed, parked or not. */
   if (is_hw)
-    gst_adecswitch_rank_hold (self);
+    gst_codex_adecswitch_rank_hold (self);
 
   decoder = gst_element_factory_make (factory_name, NULL);
   if (decoder == NULL) {
     if (is_hw)
-      gst_adecswitch_rank_release (self);
+      gst_codex_adecswitch_rank_release (self);
     GST_ELEMENT_ERROR (self, STREAM, CODEC_NOT_FOUND, (NULL),
         ("no '%s' element to decode %" GST_PTR_FORMAT, factory_name, caps));
     return GST_PAD_PROBE_DROP;
   }
+  if (g_str_equal (factory_name, "codextruehdmat"))
+    g_object_set (decoder, "authorize-es", TRUE, "resource-port", self->resource_port,
+        "automatic-resource", self->automatic_resource, "managed-policy", self->managed_policy,
+        "native-discovery", TRUE, "pts-tolerance-ns", G_GUINT64_CONSTANT (1000000), NULL);
 
   /* This bin owns PCM routing for native playback. Disable the older DTS
    * decoder-local owner before READY, avoiding a late false reset when that
@@ -521,7 +605,10 @@ have_decoder:
 
   self->decoder = decoder;
   self->decoder_factory = factory_name;
-  gst_adecswitch_pcm_prepare (self, factory_name);
+  gst_element_post_message (GST_ELEMENT (self), gst_message_new_element (
+      GST_OBJECT (self), gst_structure_new ("codex-audio-branch",
+          "factory", G_TYPE_STRING, factory_name, NULL)));
+  gst_codex_adecswitch_pcm_prepare (self, factory_name);
 
   if (!gst_element_sync_state_with_parent (decoder))
     GST_WARNING_OBJECT (self, "could not sync %s state with parent",
@@ -552,7 +639,7 @@ have_decoder:
   }
 
   if (old_decoder != NULL) {
-    if (gst_adecswitch_is_decproxy (old_decoder)) {
+    if (gst_codex_adecswitch_is_decproxy (old_decoder)) {
       /* Park it: unlinked and locked, but still PLAYING and still owning its
        * DSP decoder, so the flush that would have raced its destruction just
        * finds a live decoder. Destroyed when the bin leaves PAUSED. */
@@ -561,7 +648,7 @@ have_decoder:
           GST_OBJECT_NAME (old_decoder));
     } else {
       gst_element_call_async (GST_ELEMENT_CAST (self),
-          gst_adecswitch_teardown_decoder, gst_object_ref (old_decoder),
+          gst_codex_adecswitch_teardown_decoder, gst_object_ref (old_decoder),
           (GDestroyNotify) gst_object_unref);
     }
   }
@@ -570,9 +657,9 @@ have_decoder:
 }
 
 static GstStateChangeReturn
-gst_adecswitch_change_state (GstElement * element, GstStateChange transition)
+gst_codex_adecswitch_change_state (GstElement * element, GstStateChange transition)
 {
-  GstAdecSwitch *self = GST_ADECSWITCH (element);
+  GstCodexAdecSwitch *self = GST_CODEX_ADECSWITCH (element);
 
   /* Leaving PAUSED is the one moment a decproxy can safely be taken to NULL:
    * playback is over, so nothing is going to flush. Let any software teardown
@@ -581,8 +668,8 @@ gst_adecswitch_change_state (GstElement * element, GstStateChange transition)
    * and the old decoder is locked-state so gst_bin_element_set_state() skips
    * it (gstbin.c:2489-2501). */
   if (transition == GST_STATE_CHANGE_PAUSED_TO_READY) {
-    gst_adecswitch_pcm_stop (self);
-    gst_adecswitch_wait_hw_teardown (self, 0, 2 * G_TIME_SPAN_SECOND);
+    gst_codex_adecswitch_pcm_stop (self);
+    gst_codex_adecswitch_wait_hw_teardown (self, 0, 2 * G_TIME_SPAN_SECOND);
 
     if (self->parked_hw != NULL) {
       GstElement *parked = self->parked_hw;
@@ -591,19 +678,19 @@ gst_adecswitch_change_state (GstElement * element, GstStateChange transition)
       GST_INFO_OBJECT (self, "destroying parked %s", GST_OBJECT_NAME (parked));
       gst_element_set_state (parked, GST_STATE_NULL);
       gst_bin_remove (GST_BIN_CAST (self), parked);
-      gst_adecswitch_rank_release (self);
+      gst_codex_adecswitch_rank_release (self);
     }
   }
 
-  return GST_ELEMENT_CLASS (gst_adecswitch_parent_class)->change_state (element,
+  return GST_ELEMENT_CLASS (gst_codex_adecswitch_parent_class)->change_state (element,
       transition);
 }
 
 static void
-gst_adecswitch_set_property (GObject * object, guint prop_id,
+gst_codex_adecswitch_set_property (GObject * object, guint prop_id,
     const GValue * value, GParamSpec * pspec)
 {
-  GstAdecSwitch *self = GST_ADECSWITCH (object);
+  GstCodexAdecSwitch *self = GST_CODEX_ADECSWITCH (object);
 
   switch (prop_id) {
     case PROP_HW_TEARDOWN_GRACE_MS:
@@ -615,6 +702,22 @@ gst_adecswitch_set_property (GObject * object, guint prop_id,
     case PROP_PCM_MULTICHANNEL:
       self->pcm_multichannel = g_value_get_boolean (value);
       break;
+    case PROP_TRUEHD_PASSTHROUGH:
+      if (GST_STATE (self) <= GST_STATE_READY)
+        self->truehd_passthrough = g_value_get_boolean (value);
+      break;
+    case PROP_RESOURCE_PORT:
+      if (GST_STATE (self) <= GST_STATE_READY)
+        self->resource_port = g_value_get_int (value);
+      break;
+    case PROP_AUTOMATIC_RESOURCE:
+      if (GST_STATE (self) <= GST_STATE_READY)
+        self->automatic_resource = g_value_get_boolean (value);
+      break;
+    case PROP_MANAGED_POLICY:
+      if (GST_STATE (self) <= GST_STATE_READY)
+        self->managed_policy = g_value_get_boolean (value);
+      break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
       break;
@@ -622,10 +725,10 @@ gst_adecswitch_set_property (GObject * object, guint prop_id,
 }
 
 static void
-gst_adecswitch_get_property (GObject * object, guint prop_id, GValue * value,
+gst_codex_adecswitch_get_property (GObject * object, guint prop_id, GValue * value,
     GParamSpec * pspec)
 {
-  GstAdecSwitch *self = GST_ADECSWITCH (object);
+  GstCodexAdecSwitch *self = GST_CODEX_ADECSWITCH (object);
 
   switch (prop_id) {
     case PROP_HW_TEARDOWN_GRACE_MS:
@@ -637,6 +740,18 @@ gst_adecswitch_get_property (GObject * object, guint prop_id, GValue * value,
     case PROP_PCM_MULTICHANNEL:
       g_value_set_boolean (value, self->pcm_multichannel);
       break;
+    case PROP_TRUEHD_PASSTHROUGH:
+      g_value_set_boolean (value, self->truehd_passthrough);
+      break;
+    case PROP_RESOURCE_PORT:
+      g_value_set_int (value, self->resource_port);
+      break;
+    case PROP_AUTOMATIC_RESOURCE:
+      g_value_set_boolean (value, self->automatic_resource);
+      break;
+    case PROP_MANAGED_POLICY:
+      g_value_set_boolean (value, self->managed_policy);
+      break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
       break;
@@ -644,53 +759,53 @@ gst_adecswitch_get_property (GObject * object, guint prop_id, GValue * value,
 }
 
 static void
-gst_adecswitch_finalize (GObject * object)
+gst_codex_adecswitch_finalize (GObject * object)
 {
-  GstAdecSwitch *self = GST_ADECSWITCH (object);
+  GstCodexAdecSwitch *self = GST_CODEX_ADECSWITCH (object);
 
   g_mutex_clear (&self->lock);
   g_mutex_clear (&self->pcm_lock);
   g_cond_clear (&self->cond);
 
-  G_OBJECT_CLASS (gst_adecswitch_parent_class)->finalize (object);
+  G_OBJECT_CLASS (gst_codex_adecswitch_parent_class)->finalize (object);
 }
 
 static void
-gst_adecswitch_dispose (GObject * object)
+gst_codex_adecswitch_dispose (GObject * object)
 {
-  GstAdecSwitch *self = GST_ADECSWITCH (object);
+  GstCodexAdecSwitch *self = GST_CODEX_ADECSWITCH (object);
 
-  gst_adecswitch_pcm_stop (self);
+  gst_codex_adecswitch_pcm_stop (self);
 
   /* The current inner decoder is never torn down by
-   * gst_adecswitch_teardown_decoder() — that only runs on a family switch —
+   * gst_codex_adecswitch_teardown_decoder() — that only runs on a family switch —
    * so a decproxy still installed when the bin goes away would leave our
    * factory demoted to GST_RANK_NONE for the rest of the process, and
    * decodebin3 builds its factory list with minrank GST_RANK_MARGINAL
    * (gstdecodebin3.c:2879-2881), so we would never be plugged again. */
-  if ((self->decoder != NULL && gst_adecswitch_is_decproxy (self->decoder))
+  if ((self->decoder != NULL && gst_codex_adecswitch_is_decproxy (self->decoder))
       || self->parked_hw != NULL)
-    gst_adecswitch_rank_release (self);
+    gst_codex_adecswitch_rank_release (self);
   self->parked_hw = NULL;
   self->decoder = NULL;
   self->decoder_factory = NULL;
   gst_event_replace (&self->resource_event, NULL);
 
-  G_OBJECT_CLASS (gst_adecswitch_parent_class)->dispose (object);
+  G_OBJECT_CLASS (gst_codex_adecswitch_parent_class)->dispose (object);
 }
 
 static void
-gst_adecswitch_class_init (GstAdecSwitchClass * klass)
+gst_codex_adecswitch_class_init (GstCodexAdecSwitchClass * klass)
 {
   GObjectClass *gobject_class = G_OBJECT_CLASS (klass);
   GstElementClass *element_class = GST_ELEMENT_CLASS (klass);
 
-  gobject_class->set_property = gst_adecswitch_set_property;
-  gobject_class->get_property = gst_adecswitch_get_property;
-  gobject_class->dispose = gst_adecswitch_dispose;
-  gobject_class->finalize = gst_adecswitch_finalize;
+  gobject_class->set_property = gst_codex_adecswitch_set_property;
+  gobject_class->get_property = gst_codex_adecswitch_get_property;
+  gobject_class->dispose = gst_codex_adecswitch_dispose;
+  gobject_class->finalize = gst_codex_adecswitch_finalize;
 
-  element_class->change_state = GST_DEBUG_FUNCPTR (gst_adecswitch_change_state);
+  element_class->change_state = GST_DEBUG_FUNCPTR (gst_codex_adecswitch_change_state);
 
   g_object_class_install_property (gobject_class, PROP_HW_TEARDOWN_GRACE_MS,
       g_param_spec_uint ("hw-teardown-grace-ms", "HW teardown grace (ms)",
@@ -712,6 +827,22 @@ gst_adecswitch_class_init (GstAdecSwitchClass * klass)
           "Experimental C5 native DTS/TrueHD 5.1 and 7.1 PCM routing",
           FALSE, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS |
           GST_PARAM_MUTABLE_READY));
+  g_object_class_install_property (gobject_class, PROP_TRUEHD_PASSTHROUGH,
+      g_param_spec_boolean ("truehd-passthrough", "TrueHD passthrough test",
+          "Opt-in MAT/ES branch; requires an explicitly granted resource port",
+          FALSE, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | GST_PARAM_MUTABLE_READY));
+  g_object_class_install_property (gobject_class, PROP_RESOURCE_PORT,
+      g_param_spec_int ("resource-port", "Caller-granted ADEC port",
+          "This element never allocates or preempts an audio resource",
+          -1, 1, -1, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | GST_PARAM_MUTABLE_READY));
+  g_object_class_install_property (gobject_class, PROP_AUTOMATIC_RESOURCE,
+      g_param_spec_boolean ("automatic-resource", "Linked native sink resource",
+          "Resolve this decoder's granted ADEC port from its linked native sink",
+          FALSE, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | GST_PARAM_MUTABLE_READY));
+  g_object_class_install_property (gobject_class, PROP_MANAGED_POLICY,
+      g_param_spec_boolean ("managed-policy", "Plugin policy handshake",
+          "Use the root plugin watcher for TrueHD route selection",
+          FALSE, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | GST_PARAM_MUTABLE_READY));
 
   gst_element_class_add_static_pad_template (element_class, &sink_template);
   gst_element_class_add_static_pad_template (element_class, &src_template);
@@ -724,7 +855,7 @@ gst_adecswitch_class_init (GstAdecSwitchClass * klass)
 }
 
 static void
-gst_adecswitch_init (GstAdecSwitch * self)
+gst_codex_adecswitch_init (GstCodexAdecSwitch * self)
 {
   GstPadTemplate *tmpl;
 
@@ -733,6 +864,14 @@ gst_adecswitch_init (GstAdecSwitch * self)
   self->pcm_multichannel = g_file_test (
       "/var/lib/webosbrew/dts25/pcm-multichannel", G_FILE_TEST_EXISTS);
   self->pcm_watch = NULL;
+  self->truehd_passthrough = FALSE;
+  self->resource_port = -1;
+#ifdef CODEX_MANAGED_TEST
+  self->truehd_passthrough = managed_bridge_available &&
+      g_file_test (TRUEHD_ENABLE, G_FILE_TEST_IS_REGULAR);
+  self->automatic_resource = self->truehd_passthrough;
+  self->managed_policy = self->truehd_passthrough;
+#endif
   g_cond_init (&self->cond);
   self->grace_ms = DEFAULT_HW_TEARDOWN_GRACE_MS;
   self->post_changing_decoder = DEFAULT_POST_CHANGING_DECODER;
@@ -744,19 +883,20 @@ gst_adecswitch_init (GstAdecSwitch * self)
   tmpl = gst_static_pad_template_get (&sink_template);
   self->sinkpad = gst_ghost_pad_new_no_target_from_template ("sink", tmpl);
   gst_object_unref (tmpl);
-  gst_pad_set_query_function (self->sinkpad, gst_adecswitch_sink_query);
+  gst_pad_set_query_function (self->sinkpad, gst_codex_adecswitch_sink_query);
   gst_pad_add_probe (self->sinkpad, GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM,
-      gst_adecswitch_sink_event_probe, self, NULL);
+      gst_codex_adecswitch_sink_event_probe, self, NULL);
   gst_element_add_pad (GST_ELEMENT_CAST (self), self->sinkpad);
 
   tmpl = gst_static_pad_template_get (&src_template);
   self->srcpad = gst_ghost_pad_new_no_target_from_template ("src", tmpl);
   gst_object_unref (tmpl);
   gst_pad_add_probe (self->srcpad, GST_PAD_PROBE_TYPE_EVENT_UPSTREAM,
-      gst_adecswitch_src_event_probe, self, NULL);
+      gst_codex_adecswitch_src_event_probe, self, NULL);
   gst_pad_add_probe (self->srcpad, GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM,
-      gst_adecswitch_pcm_caps_probe, self, NULL);
+      gst_codex_adecswitch_pcm_caps_probe, self, NULL);
   gst_element_add_pad (GST_ELEMENT_CAST (self), self->srcpad);
+
 }
 
 static gboolean
@@ -765,12 +905,34 @@ plugin_init (GstPlugin * plugin)
   GST_DEBUG_CATEGORY_INIT (adecswitch_debug, "adecswitch", 0,
       "audio decoder-switching bin");
 
+#ifdef CODEX_MANAGED_TEST
+  if (g_file_test (TRUEHD_ENABLE, G_FILE_TEST_IS_REGULAR) && sizeof (gpointer) == 4 &&
+      managed_file_hash ("/usr/lib/gstreamer-1.0/libgstlgaudiodec.so",
+          "84db367e1ea3eeb4b589bf63910140cfd43ea77f2db124ae6882fbee8ebb6bb7") &&
+      managed_file_hash ("/usr/lib/gstreamer-1.0/libgstlgaudiosink.so",
+          "90dba3ef32704ce4096bf1e6045d2879d0c2192d507bc04d1e8e98437f420a43") &&
+      managed_file_hash ("/var/lib/webosbrew/dts25/libgstcodextruehdmat.so",
+          CODEX_MANAGED_BRIDGE_SHA256)) {
+    /* This is eligibility, not a dependency load. CAPS handling loads it
+     * lazily without holding GStreamer's module-initialization lock. */
+    managed_bridge_available = TRUE;
+  }
   return gst_element_register (plugin, "adecswitch", ADECSWITCH_RANK,
-      GST_TYPE_ADECSWITCH);
+      GST_TYPE_CODEX_ADECSWITCH);
+#else
+  return gst_element_register (plugin, "codexadecswitch", GST_RANK_NONE,
+      GST_TYPE_CODEX_ADECSWITCH);
+#endif
 }
 
+#ifdef CODEX_MANAGED_TEST
+GST_PLUGIN_DEFINE (GST_VERSION_MAJOR, GST_VERSION_MINOR, adecswitch,
+    "webOS DTS and optional TrueHD eARC audio routing", plugin_init,
+    VERSION, "LGPL", GST_PACKAGE_NAME, GST_PACKAGE_ORIGIN)
+#else
 GST_PLUGIN_DEFINE (GST_VERSION_MAJOR,
     GST_VERSION_MINOR,
-    adecswitch,
+    codexadecswitch,
     "Audio decoder-switching bin (keeps Dolby on the DSP across track switches)",
     plugin_init, VERSION, "LGPL", GST_PACKAGE_NAME, GST_PACKAGE_ORIGIN)
+#endif

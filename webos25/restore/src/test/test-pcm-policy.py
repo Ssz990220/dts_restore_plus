@@ -11,6 +11,7 @@ from unittest.mock import patch
 source = Path(__file__).resolve().parents[2] / 'pcm-mat-watch.py'
 spec = importlib.util.spec_from_file_location('pcm_policy', source)
 p = importlib.util.module_from_spec(spec)
+sys.path.insert(0, str(Path(spec.origin).parent))
 spec.loader.exec_module(p)
 
 
@@ -206,7 +207,8 @@ class PolicyTests(unittest.TestCase):
         try:
             code = '''import importlib.util,os,json,errno
 spec=importlib.util.spec_from_file_location('policy',SOURCE)
-p=importlib.util.module_from_spec(spec);spec.loader.exec_module(p)
+p=importlib.util.module_from_spec(spec);sys.path.insert(0, str(Path(spec.origin).parent))
+spec.loader.exec_module(p)
 p.close_inherited_fds()
 closed=False
 try:os.fstat(FD)

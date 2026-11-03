@@ -35,7 +35,7 @@ jobs:
         run: |
           git rev-parse HEAD > "$OUT/source-commit.txt"
           cp webos25/restore/pcm-mat-watch.py "$OUT/pcm-mat-watch.py"
-          (cd "$OUT" && sha256sum libgstdtsdec.so libgstadecswitch.so pcm-mat-watch.py > SHA256SUMS)
+          (cd "$OUT" && sha256sum libgstdtsdec.so libgstadecswitch.so libgstcodextruehdmat.so pcm-mat-watch.py > SHA256SUMS)
       - uses: actions/upload-artifact@v4
         with:
           name: pcm51-decoder-armel

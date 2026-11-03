@@ -9,17 +9,17 @@
  *
  * SPDX-License-Identifier: LGPL-2.1-or-later
  */
-#ifndef __GST_ADECSWITCH_H__
-#define __GST_ADECSWITCH_H__
+#ifndef __GST_CODEX_ADECSWITCH_H__
+#define __GST_CODEX_ADECSWITCH_H__
 
 #include <gst/gst.h>
 
 G_BEGIN_DECLS
 
-#define GST_TYPE_ADECSWITCH (gst_adecswitch_get_type ())
-G_DECLARE_FINAL_TYPE (GstAdecSwitch, gst_adecswitch, GST, ADECSWITCH, GstBin)
+#define GST_TYPE_CODEX_ADECSWITCH (gst_codex_adecswitch_get_type ())
+G_DECLARE_FINAL_TYPE (GstCodexAdecSwitch, gst_codex_adecswitch, GST, CODEX_ADECSWITCH, GstBin)
 
-struct _GstAdecSwitch
+struct _GstCodexAdecSwitch
 {
   GstBin bin;
 
@@ -56,10 +56,14 @@ struct _GstAdecSwitch
   guint grace_ms;               /* hw-teardown-grace-ms */
   gboolean post_changing_decoder;
   gboolean pcm_multichannel;
+  gboolean truehd_passthrough;
+  gboolean automatic_resource;
+  gboolean managed_policy;
+  gint resource_port;
   GMutex pcm_lock;
   struct _DtsPcmWatch *pcm_watch;
 };
 
 G_END_DECLS
 
-#endif /* __GST_ADECSWITCH_H__ */
+#endif /* __GST_CODEX_ADECSWITCH_H__ */

@@ -21,11 +21,47 @@ function steps(on, p) {
     lines.push('rm -f "' + marker + '"');
     lines.push('[ ! -f "' + helper + '" ] || python3 "' + helper + '" --stop');
   }
+  if (!on) {
+    lines.push('if [ -f "' + p.dest + '/truehd-earc.enabled" ]; then nohup python3 "' + helper + '" </dev/null >/dev/null 2>&1 & fi');
+  }
+  lines.push("echo OK");
+  return lines.join("\n");
+}
+
+function truehdSteps(on, p) {
+  var helper = p.dest + "/pcm-mat-watch.py";
+  var flag = p.dest + "/truehd-earc.enabled";
+  var lines = [p.appbase, "set -eu", 'python3 "' + helper + '" --check-idle'];
+  if (on) {
+    lines.push('test -f "' + p.dest + '/libgstcodextruehdmat.so" && test -f "' + p.dest + '/truehd_policy.py" || { echo "FAIL: Install the TrueHD-capable decoder first"; exit 1; }');
+    lines.push('test ! -e "' + p.dest + '/passthrough" || { echo "FAIL: Turn off DTS bitstream first"; exit 1; }');
+    lines.push('(umask 077; : > "' + flag + '")');
+  } else {
+    lines.push('rm -f "' + flag + '"');
+  }
+  lines.push('python3 "' + helper + '" --stop');
+  lines.push('if [ -f "' + flag + '" ] || [ -f "' + p.dest + '/pcm-multichannel" ]; then nohup python3 "' + helper + '" </dev/null >/dev/null 2>&1 & fi');
   lines.push("echo OK");
   return lines.join("\n");
 }
 
 function register(service, h) {
+  service.register("setTruehdEarc", function (message) {
+    if (!message.payload || typeof message.payload.enabled !== "boolean") {
+      message.respond({returnValue: false, errorText: "enabled must be a boolean"});
+      return;
+    }
+    var want = message.payload.enabled;
+    h.detect().then(function (d) {
+      if (d.profile !== h.profile) throw new Error("TrueHD eARC requires the webOS 25 profile");
+      return h.exec(truehdSteps(want, h.paths));
+    }).then(function () {
+      message.respond({returnValue: true, enabled: want,
+        summary: want ? "TrueHD eARC enabled. Restart the TV to load it in new media processes." : "TrueHD eARC disabled."});
+    }).catch(function (e) {
+      message.respond({returnValue: false, errorText: e.errorText || e.message || "TrueHD eARC setting failed"});
+    });
+  });
   service.register("setPcmMultichannel", function (message) {
     if (!message.payload || typeof message.payload.enabled !== "boolean") {
       message.respond({returnValue: false, errorText: "enabled must be a boolean"});
@@ -45,4 +81,4 @@ function register(service, h) {
   });
 }
 
-module.exports = {register: register, steps: steps};
+module.exports = {register: register, steps: steps, truehdSteps: truehdSteps};

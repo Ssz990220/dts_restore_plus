@@ -1,10 +1,10 @@
 {
   "id": "io.github.josippapez.dtsenabler",
-  "version": "2.7.54",
+  "version": "2.7.55",
   "vendor": "webosbrew community (dts_restore by Pete Batard; webOS-25 mechanism by this project)",
   "type": "web",
   "main": "index.html",
-  "title": "DTS Enabler PCM Test",
+  "title": "DTS Enabler TrueHD Candidate",
   "icon": "icon.png",
   "largeIcon": "icon.png",
   "iconColor": "#101418",

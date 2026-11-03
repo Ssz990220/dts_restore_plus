@@ -59,7 +59,7 @@ STOCK_FP=$DTS_DEST/stock.fp
 
 log() { echo "[dts25-uninstall $(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOG" 2>&1; }
 
-rm -f "$DTS_DEST/pcm-multichannel"
+rm -f "$DTS_DEST/pcm-multichannel" "$DTS_DEST/truehd-earc.enabled"
 [ ! -f "$DTS_DEST/pcm-mat-watch.py" ] || python3 "$DTS_DEST/pcm-mat-watch.py" --stop
 
 # Unmount one bind target, falling back to a LAZY detach when it is busy.
